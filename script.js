@@ -548,6 +548,75 @@
             return { x: right, z: -ahead };
         }
 
+        /* NEW: a real car nav's 3D junction view always shows a big directional arrow for the
+           upcoming maneuver — this was previously missing entirely (the scene showed the real
+           road/buildings but gave no visual cue for *which way* to go). Built as a bent tube +
+           arrowhead, angled to match the OSRM maneuver modifier (left/right/slight/sharp/uturn). */
+        function buildManeuverArrow(maneuver) {
+            if (!maneuver) return;
+            const angleMap = {
+                'straight': 0, 'slight left': -28, 'left': -75, 'sharp left': -122, 'uturn': 175,
+                'slight right': 28, 'right': 75, 'sharp right': 122
+            };
+            const angleDeg = angleMap[maneuver.modifier];
+            if (angleDeg === undefined) return; // e.g. "depart"/"arrive" — no turn to show
+            const theta = angleDeg * Math.PI / 180;
+
+            const start = new THREE.Vector3(0, 1.6, -7);
+            const forwardDist = Math.abs(angleDeg) < 10 ? 20 : 13;
+            const control = new THREE.Vector3(0, 1.6, -7 - forwardDist * 0.55);
+            const end = new THREE.Vector3(
+                Math.sin(theta) * forwardDist,
+                1.6,
+                -7 - Math.cos(theta) * forwardDist
+            );
+
+            const curve = new THREE.QuadraticBezierCurve3(start, control, end);
+            const tubeGeo = new THREE.TubeGeometry(curve, 24, 0.45, 10, false);
+            const arrowMat = new THREE.MeshStandardMaterial({
+                color: 0x22d3ee, emissive: 0x0891b2, emissiveIntensity: 0.7, roughness: 0.3
+            });
+            roadGroup.add(new THREE.Mesh(tubeGeo, arrowMat));
+
+            // Arrowhead cone at the end, oriented along the curve's tangent there
+            const tangent = curve.getTangentAt(1);
+            const coneGeo = new THREE.ConeGeometry(1.1, 2.6, 12);
+            const cone = new THREE.Mesh(coneGeo, arrowMat);
+            cone.position.copy(end);
+            const up = new THREE.Vector3(0, 1, 0);
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, tangent.clone().normalize());
+            cone.quaternion.copy(quat);
+            roadGroup.add(cone);
+        }
+
+        /* NEW: street lamps along the real route curve, alternating sides — mainly to stop the
+           night-time junction scene from reading as an empty test track. */
+        function buildStreetLamps(curve, segments) {
+            const lampCount = Math.min(10, Math.floor(segments / 6));
+            for (let i = 1; i <= lampCount; i++) {
+                const t = i / (lampCount + 1);
+                const p = curve.getPointAt(t);
+                const tangent = curve.getTangentAt(t);
+                const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+                const side = i % 2 === 0 ? 1 : -1;
+                const base = p.clone().addScaledVector(normal, side * 5.2);
+
+                const poleGeo = new THREE.CylinderGeometry(0.12, 0.15, 6.5);
+                const poleMat = new THREE.MeshStandardMaterial({ color: 0x475569 });
+                const pole = new THREE.Mesh(poleGeo, poleMat);
+                pole.position.set(base.x, 3.25, base.z);
+                roadGroup.add(pole);
+
+                const lampGeo = new THREE.SphereGeometry(0.35, 8, 8);
+                const lampMat = new THREE.MeshStandardMaterial({
+                    color: 0xfde68a, emissive: 0xfde68a, emissiveIntensity: 1.2
+                });
+                const lamp = new THREE.Mesh(lampGeo, lampMat);
+                lamp.position.set(base.x, 6.5, base.z);
+                roadGroup.add(lamp);
+            }
+        }
+
         /* Build the 3D road directly from the real OSRM route geometry (the same
            coordinates that drive the 2D map), instead of a synthetic curve, so the
            junction's shape actually matches the road being driven. */
@@ -599,6 +668,8 @@
                     roadGroup.add(dash);
                 });
             }
+
+            buildStreetLamps(curve, segments);
         }
 
         /* Fetch real building footprints from OpenStreetMap (via the public Overpass API)
@@ -714,7 +785,7 @@
            road + lane markings come straight from the OSRM geometry already being
            driven, and buildings are fetched from live OpenStreetMap data so the scene
            reflects the actual terrain around that junction rather than an invented one. */
-        async function updateJunction3DScene(stepIdx, stepName) {
+        async function updateJunction3DScene(stepIdx, stepName, maneuver) {
             if (!roadGroup || !buildingGroup || !simCoords || simCoords.length === 0) return;
 
             const requestToken = ++jctRequestToken;
@@ -724,6 +795,7 @@
 
             while (roadGroup.children.length > 0) roadGroup.remove(roadGroup.children[0]);
             buildRealRoadFromRoute(stepIdx, anchorLat, anchorLng, bearingDeg);
+            buildManeuverArrow(maneuver);
 
             while (buildingGroup.children.length > 0) buildingGroup.remove(buildingGroup.children[0]);
             renderProceduralFallbackBuildings(); // instant placeholder while the real data loads
@@ -815,7 +887,12 @@
 
             if (type === 'arrive') return '目的地に到着';
             if (type === 'depart') return '出発';
-            if (type === 'roundabout' || type === 'rotary') return 'ラウンドアバウトを通過';
+            if (type === 'roundabout' || type === 'rotary') {
+                // NEW: OSRM gives the exit number (1st exit, 2nd exit, ...) for roundabouts —
+                // previously ignored, so every roundabout gave the same generic instruction
+                // regardless of which exit to actually take.
+                return step.maneuver.exit ? `ラウンドアバウトを${step.maneuver.exit}番目の出口で退出` : 'ラウンドアバウトを通過';
+            }
             if (type === 'merge') return `${modifierText}して本線に合流`;
             if (type === 'on ramp') return 'ランプウェイに進入';
             if (type === 'off ramp') return 'ランプウェイで出口へ';
@@ -922,7 +999,7 @@
                 if (jctBox.classList.contains('hidden')) {
                     jctBox.classList.remove('hidden');
                     setTimeout(resizeJunction3D, 50);
-                    updateJunction3DScene(simIndex, roadName);
+                    updateJunction3DScene(simIndex, roadName, upcomingStep && upcomingStep.maneuver);
                     // NEW: try to show a real, reverse-geocoded landmark/intersection name (like a
                     // genuine car nav's junction sign) instead of just the OSM road name; falls back
                     // to the road name immediately while the lookup is in flight.
@@ -993,12 +1070,15 @@
                 document.getElementById('audio-external-link-text').innerText = '別タブでApple Musicを開く';
                 document.getElementById('app-btn-applemusic').className = 'w-full p-2.5 rounded-xl bg-pink-950/80 border border-pink-500 text-left text-xs font-bold text-pink-200 flex items-center gap-2 shadow';
             } else if (source === 'radio') {
-                // NOTE: TuneIn's "/embed/player/" URLs are their OFFICIAL embeddable widget product
-                // (this is literally what their own "Share → Embed" feature generates), so unlike a
-                // normal station website, it's actually designed to work inside an <iframe> — this is
-                // why we switched to it. Streaming: NHK FM (Tokyo), via TuneIn.
-                const targetUrl = "https://tunein.com/embed/player/s135065/";
-                const realUrl = "https://tunein.com/radio/NHK-FM-825-s135065/";
+                // NOTE: TuneIn's embed widget started failing to load reliably, so this uses
+                // YouTube's official IFrame embed of a 24/7 continuous live stream instead —
+                // YouTube explicitly supports being embedded (unlike a typical radio station's
+                // own website, which usually blocks framing via X-Frame-Options/CSP), so this is
+                // far more robust. To use a different station/stream, just swap RADIO_YT_ID below
+                // for any other YouTube *live* video's ID (the part after "watch?v=" in its URL).
+                const RADIO_YT_ID = 'jfKfPfyJRdk'; // Lofi Girl — 24/7 lofi radio livestream
+                const targetUrl = `https://www.youtube.com/embed/${RADIO_YT_ID}?autoplay=1&mute=0`;
+                const realUrl = `https://www.youtube.com/watch?v=${RADIO_YT_ID}`;
                 setAudioFallbackContent({
                     icon: 'radio',
                     color: 'text-red-400',
@@ -1008,7 +1088,7 @@
                     linkBg: 'bg-red-600 hover:bg-red-500'
                 });
                 loadEmbeddedPlayer(targetUrl, realUrl);
-                trackText.innerText = "ラジオ (NHK FM) - 再生中";
+                trackText.innerText = "ラジオ - 再生中";
                 icon.className = "material-symbols-filled text-red-400";
                 icon.innerText = "radio";
                 if (urlDisplay) urlDisplay.innerText = realUrl;
@@ -1432,18 +1512,31 @@
 
         async function calculateAndDrawRoute(destName = '目的地') {
             if (!destinationPos) return;
-            const startPoint = originPos || currentPos;
+            // NEW: mid-drive reroutes (recalculateRoute) now start from the vehicle's current
+            // simulated position on the road, not the original trip's origin — previously a
+            // manual "reroute" during a drive would snap back to wherever the trip started from.
+            const startPoint = (simCoords.length > 0 && simTraveledM > 0) ? simCoords[simIndex] : (originPos || currentPos);
             // NEW FEATURE: optional single waypoint ("経由地") — OSRM accepts a
             // semicolon-separated chain of coordinates and returns one continuous route
             // across all of them, with a separate `legs` entry per leg.
             const coordChain = [startPoint, ...(viaPoint ? [viaPoint] : []), destinationPos]
                 .map(p => `${p[1]},${p[0]}`).join(';');
-            const url = `https://router.project-osrm.org/route/v1/driving/${coordChain}?overview=full&geometries=geojson&steps=true`;
-            
+            // NEW: the route type the driver picked now actually changes the routing query
+            // instead of only relabeling the same route. "ECO・景観優先" excludes motorways
+            // (OSRM's public demo server supports exclude=motorway on its car profile), giving
+            // a genuinely different, lower-speed-road route rather than just a different badge.
+            const excludeParam = selectedRouteMode === 'ECO・景観優先' ? '&exclude=motorway' : '';
+            const url = `https://router.project-osrm.org/route/v1/driving/${coordChain}?overview=full&geometries=geojson&steps=true${excludeParam}`;
+
             try {
                 const res = await fetch(url);
                 const data = await res.json();
-                if (!data.routes || data.routes.length === 0) return;
+                if (!data.routes || data.routes.length === 0) {
+                    // NEW: previously failed silently (empty catch/branch) — a driver picking an
+                    // unreachable destination or losing connectivity just saw nothing happen.
+                    speakGuidance('経路を計算できませんでした。目的地を変更するか、通信環境をご確認ください。');
+                    return;
+                }
 
                 const route = data.routes[0];
                 simCoords = route.geometry.coordinates.map(c => [c[1], c[0]]);
@@ -1477,7 +1570,11 @@
                     ? `AI探索完了。${viaPointName}経由、${selectedRouteMode}ルートで${destName}までの案内を開始します。`
                     : `AI探索完了。${selectedRouteMode}ルートで${destName}までの案内を開始します。`);
                 startSmoothDrivingSimulation();
-            } catch (err) {}
+            } catch (err) {
+                // NEW: was previously a silent no-op, indistinguishable from the button doing
+                // nothing at all.
+                speakGuidance('通信エラーにより経路探索に失敗しました。もう一度お試しください。');
+            }
         }
 
         function startSmoothDrivingSimulation() {
