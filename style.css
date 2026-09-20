@@ -2818,3 +2818,34 @@ video {
             overflow: hidden;
             opacity: 0;
         }
+
+/* NEW: fullscreen modal variant — used for content-heavy screens (destination search) so they
+   get the whole display instead of a narrow, awkwardly-tall centered card. */
+.modal-card-fullscreen {
+    max-width: 100% !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    border-radius: 0.75rem !important;
+}
+
+/* NEW: the dashboard's screen area used to be a fixed pixel height (600px/660px) regardless of
+   the real browser window's actual height. On a short/narrow window this could push content
+   (including a modal's own close button) below the visible viewport with only the outer <body>'s
+   overflow:hidden to contain it — html itself could still scroll, revealing cut-off UI below the
+   device frame. Now the screen area's height adapts to the viewport, and html can no longer
+   scroll either, so the whole simulated display (and anything inside it, like a fullscreen modal)
+   always fits and its close button is always reachable. */
+html {
+    overflow: hidden;
+}
+.app-viewport {
+    height: 600px;
+    height: min(600px, 88vh);
+}
+@media (min-width: 640px) {
+    .app-viewport {
+        height: 660px;
+        height: min(660px, 88vh);
+    }
+}
