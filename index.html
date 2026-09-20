@@ -19,22 +19,16 @@
             try {
                 var box = document.getElementById('boot-error-box');
                 var text = document.getElementById('boot-error-text');
-                var skipBtn = document.getElementById('boot-skip-btn');
                 if (box && text) {
                     box.classList.remove('hidden');
                     text.innerText = e.message + ' (' + (e.filename || '').split('/').pop() + ':' + e.lineno + ')';
                 }
-                if (skipBtn) skipBtn.classList.remove('hidden');
             } catch (_ignored) { /* the error handler itself must never throw */ }
         });
         setTimeout(function () {
             var splash = document.getElementById('boot-splash');
             if (splash) splash.classList.add('boot-hidden');
         }, 5000);
-        setTimeout(function () {
-            var skipBtn = document.getElementById('boot-skip-btn');
-            if (skipBtn) skipBtn.classList.remove('hidden');
-        }, 1500);
     </script>
 
     <!-- NEW: external stylesheets loaded WITHOUT blocking rendering or script execution — the
@@ -46,6 +40,9 @@
     <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <!-- Three.js for Advanced 3D Rendering -->
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- HLS.js: plays NHK radio's official HLS (m3u8) livestream via a plain <audio> element
+         (Safari can already do this natively, but Chrome/Firefox/Edge need this) -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.6.13/hls.min.js"></script>
     <!-- FontAwesome Icons (kept only for brand logos: Apple/Bluetooth) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all'" />
     <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" /></noscript>
@@ -61,7 +58,7 @@
     <div id="toyota-bezel" class="toyota-bezel-frame w-full max-w-7xl rounded-2xl p-2 sm:p-3 shadow-2xl relative">
         
         <!-- Screen and Hardware Keys Layout -->
-        <div class="flex gap-2 w-full h-[600px] sm:h-[660px]">
+        <div class="flex gap-2 w-full app-viewport">
             
             <!-- MAIN DISPLAY GLASS SCREEN -->
             <div id="screen-container" class="display-glass-screen flex-1 rounded-xl flex flex-row relative shadow-inner">
@@ -85,10 +82,6 @@
                             <div class="text-red-300 text-[10px] font-bold">読み込み中にエラーが発生しました</div>
                             <div id="boot-error-text" class="text-red-200 text-[9px] font-mono mt-1 break-all"></div>
                         </div>
-                        <!-- NEW: manual skip — appears a couple seconds in, so the user is never truly stuck -->
-                        <button id="boot-skip-btn" onclick="document.getElementById('boot-splash').classList.add('boot-hidden')" class="hidden mt-4 px-4 py-1.5 rounded-full bg-slate-800/80 border border-slate-600 text-slate-300 text-[10px] font-bold active:scale-95">
-                            タップして続行 →
-                        </button>
                     </div>
                     <div id="boot-caution" class="absolute bottom-8 left-0 right-0 text-center px-6">
                         <div class="inline-block bg-gradient-to-r from-transparent via-slate-800/70 to-transparent px-4 py-2 rounded">
@@ -490,10 +483,13 @@
                                     <i class="fa-brands fa-apple text-pink-400 text-xl"></i> Apple Music (公式Web)
                                 </button>
 
-                                <!-- ラジオ (radiojapan.org) Switch Button -->
+                                <!-- ラジオ (SomaFM 直接ストリーム) Switch Button -->
                                 <button id="app-btn-radio" onclick="switchAudioSource('radio')" class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left text-xs font-bold text-slate-300 flex items-center gap-2">
-                                    <span class="material-symbols-filled text-red-400 text-xl">radio</span> ラジオ
-                                </button>
+                                    <span class="material-symbols-filled text-red-400 text-xl">radio</span> ラジオ</button>
+
+                                <!-- NEW: locally uploaded MP3 playback — files never leave the browser -->
+                                <button id="app-btn-local" onclick="switchAudioSource('local')" class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left text-xs font-bold text-slate-300 flex items-center gap-2">
+                                    <span class="material-symbols-filled text-emerald-400 text-xl">upload_file</span> MP3をアップロード</button>
 
                                 <div class="flex items-center justify-between px-2 pt-2">
                                     <div class="text-xs font-bold text-slate-400">クイックリンク</div>
@@ -568,6 +564,54 @@
                                         <span class="material-symbols-filled text-sm">open_in_new</span> <span id="audio-fallback-link-text">別タブで開く</span>
                                     </a>
                                 </div>
+
+                                <!-- NEW: ラジオ — an <audio> element playing a direct internet-radio stream
+                                     (SomaFM), instead of embedding someone else's website in an <iframe>.
+                                     A direct audio stream can't be blocked by X-Frame-Options/CSP the way a
+                                     framed page can, and SomaFM's streams explicitly allow cross-origin
+                                     playback, so this is far more reliable than any iframe-embedded player. -->
+                                <div id="radio-player-panel" class="hidden absolute inset-0 bg-slate-950 flex flex-col items-center justify-center text-center p-6 gap-4">
+                                    <span class="material-symbols-filled text-6xl text-red-400 pulse-glow">radio</span>
+                                    <div>
+                                        <div id="radio-station-name" class="text-base font-black text-white">Groove Salad</div>
+                                        <div class="text-xs text-slate-400 mt-1">SomaFM ネットラジオ (直接ストリーム再生)</div>
+                                    </div>
+                                    <audio id="radio-audio-el" preload="none"></audio>
+                                    <button onclick="toggleRadioPlayback()" id="radio-play-btn" class="w-16 h-16 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow-xl">
+                                        <span class="material-symbols-filled text-3xl">play_arrow</span>
+                                    </button>
+                                    <div class="grid grid-cols-3 gap-2 w-full max-w-xs">
+                                        <button onclick="selectRadioStation('groovesalad', 'Groove Salad', this)" class="radio-station-btn active p-2 rounded-xl bg-red-950/80 border border-red-500 text-white text-[10px] font-bold">Groove Salad</button>
+                                        <button onclick="selectRadioStation('indiepop', 'Indie Pop Rocks', this)" class="radio-station-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold">Indie Pop</button>
+                                        <button onclick="selectRadioStation('dronezone', 'Drone Zone', this)" class="radio-station-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold">Drone Zone</button>
+                                    </div>
+                                </div>
+
+                                <!-- NEW: locally uploaded MP3 playback. Files are read with the File API and
+                                     kept in IndexedDB — entirely inside this browser, never uploaded anywhere. -->
+                                <div id="local-player-panel" class="hidden absolute inset-0 bg-slate-950 flex flex-col p-4 gap-3 overflow-y-auto">
+                                    <div class="flex items-center justify-between shrink-0">
+                                        <div class="text-sm font-black text-white flex items-center gap-2">
+                                            <span class="material-symbols-filled text-emerald-400">library_music</span> ローカルMP3
+                                        </div>
+                                        <label class="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-bold text-xs text-white flex items-center gap-1.5 cursor-pointer shadow">
+                                            <span class="material-symbols-filled text-sm">upload_file</span> アップロード
+                                            <input type="file" accept="audio/*" multiple class="hidden" onchange="handleMp3Upload(event)">
+                                        </label>
+                                    </div>
+                                    <div class="text-[10px] text-slate-500 shrink-0">ファイルはサーバーに送信されず、このブラウザ内(IndexedDB)にのみ保存されます。</div>
+                                    <audio id="local-audio-el" preload="none"></audio>
+                                    <div id="local-now-playing" class="hidden shrink-0 bg-slate-900 border border-emerald-700 rounded-xl p-3 flex items-center gap-3">
+                                        <button onclick="toggleLocalPlayback()" id="local-play-btn" class="w-11 h-11 shrink-0 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition flex items-center justify-center text-white">
+                                            <span class="material-symbols-filled">play_arrow</span>
+                                        </button>
+                                        <div class="min-w-0 flex-1">
+                                            <div id="local-now-playing-name" class="text-xs font-bold text-white truncate"></div>
+                                            <div class="text-[9px] text-slate-400">再生中</div>
+                                        </div>
+                                    </div>
+                                    <div id="local-mp3-list" class="space-y-2 flex-1 min-h-0"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -639,18 +683,27 @@
                 </div>
 
                 <!-- GENERIC SYSTEM MODAL -->
-                <div id="app-modal" class="hidden absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-                    <div class="bg-slate-900 border-2 border-slate-700 rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col animate-fade-in">
-                        <div class="bg-slate-800 px-5 py-4 border-b border-slate-700 flex items-center justify-between">
-                            <h3 id="modal-title" class="font-black text-base sm:text-lg text-cyan-400 flex items-center gap-2">
+                <!-- FIXED: previously modal-body used max-h-[70vh] (viewport height), which on a
+                     real browser window taller than this simulated dashboard could overflow past
+                     the dashboard's own visible frame — pushing the close(X) button off-screen
+                     and unreachable for tall content like destination search. Now the whole card
+                     is height-bound to the dashboard's own actual box (h-full inside inset-0),
+                     with header/footer pinned (shrink-0) and only modal-body scrolling — so the
+                     close button is always visible no matter how tall the content or how tall the
+                     real browser window is. openCustomModal(title, body, {fullscreen:true}) also
+                     widens the card to fill the full width for content-heavy screens. -->
+                <div id="app-modal" class="hidden absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4">
+                    <div id="modal-card" class="bg-slate-900 border-2 border-slate-700 rounded-3xl w-full max-w-2xl h-full max-h-full shadow-2xl overflow-hidden flex flex-col animate-fade-in transition-all">
+                        <div class="shrink-0 bg-slate-800 px-4 sm:px-5 py-3 sm:py-4 border-b border-slate-700 flex items-center justify-between">
+                            <h3 id="modal-title" class="font-black text-base sm:text-lg text-cyan-400 flex items-center gap-2 min-w-0 truncate">
                                 <span class="material-symbols-filled" >info</span> 設定
                             </h3>
-                            <button onclick="closeModal()" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 active:scale-95 transition text-xl">
+                            <button onclick="closeModal()" class="w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 active:scale-95 transition text-xl">
                                 <span class="material-symbols-filled" >close</span>
                             </button>
                         </div>
-                        <div id="modal-body" class="p-5 text-xs leading-relaxed text-slate-200 max-h-[70vh] overflow-y-auto"></div>
-                        <div id="modal-footer" class="bg-slate-950 px-5 py-3 border-t border-slate-800 flex justify-end gap-2">
+                        <div id="modal-body" class="flex-1 min-h-0 p-4 sm:p-5 text-xs leading-relaxed text-slate-200 overflow-y-auto"></div>
+                        <div id="modal-footer" class="shrink-0 bg-slate-950 px-4 sm:px-5 py-3 border-t border-slate-800 flex justify-end gap-2">
                             <button onclick="closeModal()" class="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 font-bold text-xs text-white border border-slate-700">
                                 閉じる
                             </button>
