@@ -4,7 +4,7 @@
         // GitHub Pages版: ここに自分のGemini APIキーを直接貼り付けてください
         // (取得先: https://aistudio.google.com/app/apikey)。
         // ⚠️ 静的サイトなので、このキーは誰でもブラウザの「ページのソースを表示」で読めてしまいます。
-        const GEMINI_API_KEY = 'ここにGemini APIキーを貼り付け';
+        const GEMINI_API_KEY = 'AQ.Ab8RN6LyQMJGHECNs6t2JwNpGqmd4jW9Yvr5GHS-M9ViT31xUg';
         // NOTE: the boot-splash failsafe (uncaught-error handler, auto-hide timer, and the
         // manual "tap to continue" skip-button timer) now lives in a tiny dependency-free
         // <script> at the very top of index.html's <head>, ahead of every external resource,
