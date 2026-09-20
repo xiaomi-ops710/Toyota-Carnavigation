@@ -22,6 +22,7 @@
         let guidanceOff = false;
         let splitScreenOpen = true;
         let currentAudioSource = 'applemusic';
+        let currentRadioStationLabel = 'Groove Salad'; // NEW: SomaFM radio state
 
         // NEW FEATURE & UPDATED STATES
         let driveMode = 'NORMAL'; 
@@ -1040,12 +1041,32 @@
             const trackText = document.getElementById('top-audio-track');
             const icon = document.getElementById('mini-audio-icon');
             const urlDisplay = document.getElementById('player-current-url');
+            const urlBar = urlDisplay ? urlDisplay.closest('.flex-1') : null;
 
             // Reset App Button Styles
-            ['applemusic', 'radio'].forEach(s => {
+            ['applemusic', 'radio', 'local'].forEach(s => {
                 const btn = document.getElementById(`app-btn-${s}`);
                 if (btn) btn.className = 'w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left text-xs font-bold text-slate-300 flex items-center gap-2';
             });
+
+            // NEW: only the iframe-based source (Apple Music) needs the fallback/error UI and the
+            // address bar up top — the radio and local-MP3 panels are plain <audio> elements with
+            // their own self-contained UI, so those pieces are hidden while either is active.
+            const iframe = document.getElementById('audio-player-iframe');
+            const radioPanel = document.getElementById('radio-player-panel');
+            const localPanel = document.getElementById('local-player-panel');
+            if (iframe) iframe.classList.toggle('hidden', source !== 'applemusic');
+            if (radioPanel) radioPanel.classList.toggle('hidden', source !== 'radio');
+            if (localPanel) localPanel.classList.toggle('hidden', source !== 'local');
+            hideAudioEmbedFallback();
+            if (urlBar) urlBar.style.visibility = (source === 'applemusic') ? '' : 'hidden';
+
+            // Stop whichever <audio> element isn't the active source, so switching apps doesn't
+            // leave two things playing at once.
+            const radioEl = document.getElementById('radio-audio-el');
+            const localEl = document.getElementById('local-audio-el');
+            if (source !== 'radio' && radioEl && !radioEl.paused) radioEl.pause();
+            if (source !== 'local' && localEl && !localEl.paused) localEl.pause();
 
             if (source === 'applemusic') {
                 // NOTE: a normal music.apple.com page refuses to be shown inside an <iframe> (it sends
@@ -1070,32 +1091,239 @@
                 document.getElementById('audio-external-link-text').innerText = '別タブでApple Musicを開く';
                 document.getElementById('app-btn-applemusic').className = 'w-full p-2.5 rounded-xl bg-pink-950/80 border border-pink-500 text-left text-xs font-bold text-pink-200 flex items-center gap-2 shadow';
             } else if (source === 'radio') {
-                // NOTE: TuneIn's embed widget started failing to load reliably, so this uses
-                // YouTube's official IFrame embed of a 24/7 continuous live stream instead —
-                // YouTube explicitly supports being embedded (unlike a typical radio station's
-                // own website, which usually blocks framing via X-Frame-Options/CSP), so this is
-                // far more robust. To use a different station/stream, just swap RADIO_YT_ID below
-                // for any other YouTube *live* video's ID (the part after "watch?v=" in its URL).
-                const RADIO_YT_ID = 'jfKfPfyJRdk'; // Lofi Girl — 24/7 lofi radio livestream
-                const targetUrl = `https://www.youtube.com/embed/${RADIO_YT_ID}?autoplay=1&mute=0`;
-                const realUrl = `https://www.youtube.com/watch?v=${RADIO_YT_ID}`;
-                setAudioFallbackContent({
-                    icon: 'radio',
-                    color: 'text-red-400',
-                    text: 'ネットワーク環境によりラジオの埋め込みプレーヤーを表示できません。下のボタンから直接お楽しみください。',
-                    linkHref: realUrl,
-                    linkText: '別タブでラジオを開いて再生',
-                    linkBg: 'bg-red-600 hover:bg-red-500'
-                });
-                loadEmbeddedPlayer(targetUrl, realUrl);
-                trackText.innerText = "ラジオ - 再生中";
+                // NEW: TuneIn's embed widget, and later a YouTube livestream embed, both proved
+                // unreliable (either blocked framing or errored out). Neither is used anymore —
+                // this plays a direct SomaFM internet-radio audio stream instead, through a plain
+                // <audio> element. SomaFM's streams send Access-Control-Allow-Origin: *, so there's
+                // no iframe/X-Frame-Options failure mode possible here at all.
+                trackText.innerText = "ラジオ - " + currentRadioStationLabel;
                 icon.className = "material-symbols-filled text-red-400";
                 icon.innerText = "radio";
-                if (urlDisplay) urlDisplay.innerText = realUrl;
-                document.getElementById('audio-external-link').href = realUrl;
-                document.getElementById('audio-external-link-text').innerText = '別タブでラジオを開く';
                 document.getElementById('app-btn-radio').className = 'w-full p-2.5 rounded-xl bg-red-950/80 border border-red-500 text-left text-xs font-bold text-red-200 flex items-center gap-2 shadow';
+            } else if (source === 'local') {
+                // NEW: locally uploaded MP3 playback.
+                trackText.innerText = "ローカルMP3";
+                icon.className = "material-symbols-filled text-emerald-400";
+                icon.innerText = "library_music";
+                document.getElementById('app-btn-local').className = 'w-full p-2.5 rounded-xl bg-emerald-950/80 border border-emerald-500 text-left text-xs font-bold text-emerald-200 flex items-center gap-2 shadow';
+                renderLocalMp3List();
             }
+        }
+
+        /* ====================================================================
+           RADIO (SomaFM 直接ストリーム再生) — <audio>ベース、iframe不使用
+           ==================================================================== */
+        const RADIO_STATIONS = {
+            groovesalad: { url: 'https://ice.somafm.com/groovesalad', label: 'Groove Salad' },
+            indiepop: { url: 'https://ice.somafm.com/indiepop', label: 'Indie Pop Rocks' },
+            dronezone: { url: 'https://ice.somafm.com/dronezone', label: 'Drone Zone' }
+        };
+
+        function selectRadioStation(key, label, btn) {
+            playBeep();
+            const station = RADIO_STATIONS[key];
+            if (!station) return;
+            currentRadioStationLabel = label;
+
+            document.querySelectorAll('.radio-station-btn').forEach(b => {
+                b.className = 'radio-station-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold';
+            });
+            if (btn) btn.className = 'radio-station-btn active p-2 rounded-xl bg-red-950/80 border border-red-500 text-white text-[10px] font-bold';
+
+            const nameEl = document.getElementById('radio-station-name');
+            if (nameEl) nameEl.innerText = label;
+            const trackText = document.getElementById('top-audio-track');
+            if (trackText && currentAudioSource === 'radio') trackText.innerText = 'ラジオ - ' + label;
+
+            const radioEl = document.getElementById('radio-audio-el');
+            if (!radioEl) return;
+            const wasPlaying = !radioEl.paused;
+            radioEl.pause();
+            radioEl.src = station.url;
+            if (wasPlaying) radioEl.play().catch(() => {});
+            updateRadioPlayButtonIcon();
+        }
+
+        function toggleRadioPlayback() {
+            playBeep();
+            const radioEl = document.getElementById('radio-audio-el');
+            if (!radioEl) return;
+            if (!radioEl.src) {
+                const station = RADIO_STATIONS.groovesalad;
+                radioEl.src = station.url;
+            }
+            if (radioEl.paused) {
+                radioEl.play().catch(() => {
+                    speakGuidance('ラジオの再生に失敗しました。通信環境をご確認ください。');
+                });
+            } else {
+                radioEl.pause();
+            }
+            updateRadioPlayButtonIcon();
+        }
+
+        function updateRadioPlayButtonIcon() {
+            const radioEl = document.getElementById('radio-audio-el');
+            const iconEl = document.querySelector('#radio-play-btn .material-symbols-filled');
+            if (!radioEl || !iconEl) return;
+            iconEl.innerText = radioEl.paused ? 'play_arrow' : 'pause';
+        }
+
+        /* ====================================================================
+           ローカルMP3再生 — File API + IndexedDB。ファイルはこのブラウザの中だけに
+           保存され、どこにもアップロードされない。
+           ==================================================================== */
+        const MP3_DB_NAME = 'toyotaNaviLocalMp3';
+        const MP3_STORE_NAME = 'files';
+        let mp3DbPromise = null;
+
+        function openMp3Db() {
+            if (mp3DbPromise) return mp3DbPromise;
+            mp3DbPromise = new Promise((resolve, reject) => {
+                if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+                const req = indexedDB.open(MP3_DB_NAME, 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(MP3_STORE_NAME)) {
+                        db.createObjectStore(MP3_STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            return mp3DbPromise;
+        }
+
+        async function saveMp3ToDb(file) {
+            const db = await openMp3Db();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(MP3_STORE_NAME, 'readwrite');
+                const store = tx.objectStore(MP3_STORE_NAME);
+                const req = store.add({ name: file.name, blob: file, addedAt: Date.now() });
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function loadAllMp3FromDb() {
+            const db = await openMp3Db();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(MP3_STORE_NAME, 'readonly');
+                const store = tx.objectStore(MP3_STORE_NAME);
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function deleteMp3FromDb(id) {
+            const db = await openMp3Db();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(MP3_STORE_NAME, 'readwrite');
+                tx.objectStore(MP3_STORE_NAME).delete(id);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        let currentLocalMp3Id = null;
+        let currentLocalObjectUrl = null;
+
+        async function handleMp3Upload(event) {
+            const files = Array.from(event.target.files || []);
+            event.target.value = ''; // allow re-selecting the same file later
+            if (files.length === 0) return;
+            try {
+                for (const file of files) {
+                    await saveMp3ToDb(file);
+                }
+                speakGuidance(`${files.length}件のMP3を追加しました。`);
+            } catch (err) {
+                speakGuidance('MP3の保存に失敗しました。');
+            }
+            renderLocalMp3List();
+        }
+
+        async function renderLocalMp3List() {
+            const listEl = document.getElementById('local-mp3-list');
+            if (!listEl) return;
+            let files;
+            try {
+                files = await loadAllMp3FromDb();
+            } catch (err) {
+                listEl.innerHTML = '<div class="text-xs text-red-400 p-2">このブラウザではローカル保存に対応していません。</div>';
+                return;
+            }
+            if (files.length === 0) {
+                listEl.innerHTML = '<div class="text-xs text-slate-500 p-2 text-center">アップロードされたMP3はまだありません。右上の「アップロード」から追加してください。</div>';
+                return;
+            }
+            listEl.innerHTML = files.slice().reverse().map(f => `
+                <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl p-2.5">
+                    <button onclick="playLocalMp3(${f.id}, ${JSON.stringify(f.name)})" class="w-9 h-9 shrink-0 rounded-full bg-emerald-700 hover:bg-emerald-600 active:scale-95 transition flex items-center justify-center text-white">
+                        <span class="material-symbols-filled text-lg">play_arrow</span>
+                    </button>
+                    <div class="min-w-0 flex-1 text-xs font-bold text-white truncate">${f.name}</div>
+                    <button onclick="deleteLocalMp3(${f.id})" class="w-9 h-9 shrink-0 rounded-full text-slate-500 hover:text-red-400 hover:bg-slate-800 flex items-center justify-center transition" title="削除">
+                        <span class="material-symbols-filled text-lg">delete</span>
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function playLocalMp3(id, name) {
+            playBeep();
+            const db = await openMp3Db();
+            const tx = db.transaction(MP3_STORE_NAME, 'readonly');
+            const req = tx.objectStore(MP3_STORE_NAME).get(id);
+            req.onsuccess = () => {
+                const record = req.result;
+                if (!record) return;
+                if (currentLocalObjectUrl) URL.revokeObjectURL(currentLocalObjectUrl);
+                currentLocalObjectUrl = URL.createObjectURL(record.blob);
+                currentLocalMp3Id = id;
+
+                const el = document.getElementById('local-audio-el');
+                el.src = currentLocalObjectUrl;
+                el.play().catch(() => {});
+
+                const nowPlaying = document.getElementById('local-now-playing');
+                const nameEl = document.getElementById('local-now-playing-name');
+                if (nowPlaying) nowPlaying.classList.remove('hidden');
+                if (nameEl) nameEl.innerText = name;
+                updateLocalPlayButtonIcon();
+
+                const trackText = document.getElementById('top-audio-track');
+                if (trackText && currentAudioSource === 'local') trackText.innerText = name;
+            };
+        }
+
+        function toggleLocalPlayback() {
+            playBeep();
+            const el = document.getElementById('local-audio-el');
+            if (!el || !el.src) return;
+            if (el.paused) el.play().catch(() => {}); else el.pause();
+            updateLocalPlayButtonIcon();
+        }
+
+        function updateLocalPlayButtonIcon() {
+            const el = document.getElementById('local-audio-el');
+            const iconEl = document.querySelector('#local-play-btn .material-symbols-filled');
+            if (!el || !iconEl) return;
+            iconEl.innerText = el.paused ? 'play_arrow' : 'pause';
+        }
+
+        async function deleteLocalMp3(id) {
+            playBeep();
+            if (id === currentLocalMp3Id) {
+                const el = document.getElementById('local-audio-el');
+                if (el) { el.pause(); el.removeAttribute('src'); }
+                const nowPlaying = document.getElementById('local-now-playing');
+                if (nowPlaying) nowPlaying.classList.add('hidden');
+                currentLocalMp3Id = null;
+            }
+            try { await deleteMp3FromDb(id); } catch (err) {}
+            renderLocalMp3List();
         }
 
         // NEW: fills in the generic fallback panel (icon/message/external link) for whichever
@@ -1272,109 +1500,117 @@
         function openDestinationModal() {
             playBeep();
             const { favHtml, histHtml } = renderFavoritesAndHistory();
+            // NEW: now opened as a fullscreen modal (see openCustomModal's fullscreen option),
+            // so the layout is reorganized into two columns on wider screens instead of one long
+            // vertically-stacked column — search fields on the left, favorites/history/quick
+            // destinations on the right, both visible without scrolling past the fold.
             const body = `
-                <div class="space-y-4">
-                    <!-- M3 filled text fields: 出発地 / 経由地 / 目的地 -->
-                    <div class="space-y-3">
-                        <div class="flex items-center gap-2">
-                            <div class="flex-1">
-                                <label class="block text-[11px] font-bold tracking-wide text-emerald-400 mb-1 ml-1">出発地</label>
-                                <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-emerald-400 transition">
-                                    <span class="material-symbols-filled text-emerald-400 text-lg">trip_origin</span>
-                                    <input id="origin-input" type="text" placeholder="現在地 (空欄時) または任意の場所" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
-                                    <button onclick="searchLocation('origin')" class="w-11 h-11 shrink-0 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
-                                        <span class="material-symbols-filled text-lg">search</span>
-                                    </button>
+                <div class="sm:grid sm:grid-cols-[1.3fr_1fr] sm:gap-5 sm:items-start">
+                    <div class="space-y-4">
+                        <!-- M3 filled text fields: 出発地 / 経由地 / 目的地 -->
+                        <div class="space-y-3">
+                            <div class="flex items-center gap-2">
+                                <div class="flex-1">
+                                    <label class="block text-[11px] font-bold tracking-wide text-emerald-400 mb-1 ml-1">出発地</label>
+                                    <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-emerald-400 transition">
+                                        <span class="material-symbols-filled text-emerald-400 text-lg">trip_origin</span>
+                                        <input id="origin-input" type="text" placeholder="現在地 (空欄時) または任意の場所" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
+                                        <button onclick="searchLocation('origin')" class="w-11 h-11 shrink-0 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
+                                            <span class="material-symbols-filled text-lg">search</span>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div id="origin-search-results" class="space-y-2"></div>
+                            <div id="origin-search-results" class="space-y-2"></div>
 
-                        <!-- NEW FEATURE: optional single waypoint ("経由地") -->
-                        <div class="flex items-center gap-2">
-                            <div class="flex-1">
-                                <label class="block text-[11px] font-bold tracking-wide text-amber-400 mb-1 ml-1">経由地(任意)</label>
-                                <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-amber-400 transition">
-                                    <span class="material-symbols-filled text-amber-400 text-lg">alt_route</span>
-                                    <input id="via-input" type="text" placeholder="例: コンビニ, 道の駅" value="${viaPointName}" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
-                                    ${viaPoint ? '<button onclick="clearViaPoint()" class="w-11 h-11 shrink-0 rounded-full bg-slate-700 hover:bg-slate-600 active:scale-95 transition flex items-center justify-center text-white" title="経由地を削除"><span class="material-symbols-filled text-lg">close</span></button>' : ''}
-                                    <button onclick="searchLocation('via')" class="w-11 h-11 shrink-0 rounded-full bg-amber-600 hover:bg-amber-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
-                                        <span class="material-symbols-filled text-lg">search</span>
-                                    </button>
+                            <!-- NEW FEATURE: optional single waypoint ("経由地") -->
+                            <div class="flex items-center gap-2">
+                                <div class="flex-1">
+                                    <label class="block text-[11px] font-bold tracking-wide text-amber-400 mb-1 ml-1">経由地(任意)</label>
+                                    <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-amber-400 transition">
+                                        <span class="material-symbols-filled text-amber-400 text-lg">alt_route</span>
+                                        <input id="via-input" type="text" placeholder="例: コンビニ, 道の駅" value="${viaPointName}" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
+                                        ${viaPoint ? '<button onclick="clearViaPoint()" class="w-11 h-11 shrink-0 rounded-full bg-slate-700 hover:bg-slate-600 active:scale-95 transition flex items-center justify-center text-white" title="経由地を削除"><span class="material-symbols-filled text-lg">close</span></button>' : ''}
+                                        <button onclick="searchLocation('via')" class="w-11 h-11 shrink-0 rounded-full bg-amber-600 hover:bg-amber-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
+                                            <span class="material-symbols-filled text-lg">search</span>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div id="via-search-results" class="space-y-2"></div>
+                            <div id="via-search-results" class="space-y-2"></div>
 
-                        <!-- Free Destination Search Input -->
-                        <div class="flex items-center gap-2">
-                            <div class="flex-1">
-                                <label class="block text-[11px] font-bold tracking-wide text-red-400 mb-1 ml-1">目的地</label>
-                                <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-red-400 transition">
-                                    <span class="material-symbols-filled text-red-400 text-lg">location_on</span>
-                                    <input id="dest-input" type="text" placeholder="例: 東京タワー, 横浜赤レンガ倉庫" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
-                                    <button onclick="searchLocation('dest')" class="w-11 h-11 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
-                                        <span class="material-symbols-filled text-lg">search</span>
-                                    </button>
+                            <!-- Free Destination Search Input -->
+                            <div class="flex items-center gap-2">
+                                <div class="flex-1">
+                                    <label class="block text-[11px] font-bold tracking-wide text-red-400 mb-1 ml-1">目的地</label>
+                                    <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-red-400 transition">
+                                        <span class="material-symbols-filled text-red-400 text-lg">location_on</span>
+                                        <input id="dest-input" type="text" placeholder="例: 東京タワー, 横浜赤レンガ倉庫" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
+                                        <button onclick="searchLocation('dest')" class="w-11 h-11 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
+                                            <span class="material-symbols-filled text-lg">search</span>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
+                            <div id="dest-search-results" class="space-y-2"></div>
                         </div>
-                        <div id="dest-search-results" class="space-y-2"></div>
-                    </div>
 
-                    <!-- AI Route Option Selector -->
-                    <div class="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-2">
-                        <div class="flex items-center justify-between">
-                            <div class="text-xs font-bold text-cyan-400 flex items-center gap-1.5">
-                                <span class="material-symbols-filled" >auto_awesome</span> AIルート優先モード選択
+                        <!-- AI Route Option Selector -->
+                        <div class="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-2">
+                            <div class="flex items-center justify-between">
+                                <div class="text-xs font-bold text-cyan-400 flex items-center gap-1.5">
+                                    <span class="material-symbols-filled" >auto_awesome</span> AIルート優先モード選択
+                                </div>
+                                <button onclick="toggleTrafficAvoidance(this)" class="p-2 rounded-xl bg-emerald-900/80 border border-emerald-400 text-center font-bold text-xs text-emerald-200 flex items-center justify-center gap-1">
+                                    <span class="material-symbols-filled text-sm">traffic</span><span class="tag">渋滞回避: ON</span>
+                                </button>
                             </div>
-                            <button onclick="toggleTrafficAvoidance(this)" class="p-2 rounded-xl bg-emerald-900/80 border border-emerald-400 text-center font-bold text-xs text-emerald-200 flex items-center justify-center gap-1">
-                                <span class="material-symbols-filled text-sm">traffic</span><span class="tag">渋滞回避: ON</span>
-                            </button>
-                        </div>
-                        <div class="grid grid-cols-3 gap-2">
-                            <button onclick="selectRouteType('AI推奨', this)" class="route-opt-btn active p-2 rounded-xl bg-blue-900/80 border border-blue-400 text-center font-bold text-xs text-white">
-                                AI推奨
-                            </button>
-                            <button onclick="selectRouteType('高速優先', this)" class="route-opt-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-center font-bold text-xs text-slate-300">
-                                高速優先
-                            </button>
-                            <button onclick="selectRouteType('ECO・景観優先', this)" class="route-opt-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-center font-bold text-xs text-slate-300">
-                                ECO・景観
-                            </button>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button onclick="selectRouteType('AI推奨', this)" class="route-opt-btn active p-2 rounded-xl bg-blue-900/80 border border-blue-400 text-center font-bold text-xs text-white">
+                                    AI推奨
+                                </button>
+                                <button onclick="selectRouteType('高速優先', this)" class="route-opt-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-center font-bold text-xs text-slate-300">
+                                    高速優先
+                                </button>
+                                <button onclick="selectRouteType('ECO・景観優先', this)" class="route-opt-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-center font-bold text-xs text-slate-300">
+                                    ECO・景観
+                                </button>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- NEW: Favorites -->
-                    <div class="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1.5">
-                        <div class="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-                            <span class="material-symbols-filled text-sm">star</span> お気に入り地点
+                    <div class="space-y-4 mt-4 sm:mt-0">
+                        <!-- NEW: Favorites -->
+                        <div class="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1.5">
+                            <div class="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                                <span class="material-symbols-filled text-sm">star</span> お気に入り地点
+                            </div>
+                            ${favHtml}
                         </div>
-                        ${favHtml}
-                    </div>
 
-                    <!-- NEW: Recent History -->
-                    <div class="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1.5">
-                        <div class="text-xs font-bold text-slate-300 flex items-center gap-1.5">
-                            <span class="material-symbols-filled text-sm">history</span> 履歴
+                        <!-- NEW: Recent History -->
+                        <div class="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1.5">
+                            <div class="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                                <span class="material-symbols-filled text-sm">history</span> 履歴
+                            </div>
+                            ${histHtml}
                         </div>
-                        ${histHtml}
-                    </div>
 
-                    <!-- Quick Preset Recommendations -->
-                    <div class="grid grid-cols-2 gap-2">
-                        <button onclick="setQuickDestination('東京タワー', 35.6586, 139.7454)" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-left border border-slate-700">
-                            <div class="font-bold text-xs text-white">東京タワー</div>
-                            <div class="text-[9px] text-slate-400">東京都港区芝公園</div>
-                        </button>
-                        <button onclick="setQuickDestination('国立競技場', 35.6778, 139.7137)" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-left border border-slate-700">
-                            <div class="font-bold text-xs text-white">国立競技場</div>
-                            <div class="text-[9px] text-slate-400">東京都新宿区霞ヶ丘町</div>
-                        </button>
+                        <!-- Quick Preset Recommendations -->
+                        <div class="grid grid-cols-2 gap-2">
+                            <button onclick="setQuickDestination('東京タワー', 35.6586, 139.7454)" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-left border border-slate-700">
+                                <div class="font-bold text-xs text-white">東京タワー</div>
+                                <div class="text-[9px] text-slate-400">東京都港区芝公園</div>
+                            </button>
+                            <button onclick="setQuickDestination('国立競技場', 35.6778, 139.7137)" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-left border border-slate-700">
+                                <div class="font-bold text-xs text-white">国立競技場</div>
+                                <div class="text-[9px] text-slate-400">東京都新宿区霞ヶ丘町</div>
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
-            openCustomModal('目的地＆AI経路探索', body);
+            openCustomModal('目的地＆AI経路探索', body, { fullscreen: true });
         }
 
         let selectedRouteMode = 'AI推奨';
@@ -2503,10 +2739,15 @@
         function toggleTConnectMenu() { playBeep(); document.getElementById('tconnect-menu').classList.toggle('hidden'); }
         function closeTConnectMenu() { playBeep(); document.getElementById('tconnect-menu').classList.add('hidden'); }
 
-        function openCustomModal(title, bodyHtml) {
+        function openCustomModal(title, bodyHtml, opts = {}) {
             document.getElementById('modal-title').innerHTML = `<span class="material-symbols-filled" >info</span> ${title}`;
             document.getElementById('modal-body').innerHTML = bodyHtml;
             document.getElementById('app-modal').classList.remove('hidden');
+            // NEW: fullscreen option — widens the modal card to fill the whole display instead
+            // of the small centered card, for content-heavy screens like destination search that
+            // used to feel cramped/too-tall inside the narrow default card.
+            const card = document.getElementById('modal-card');
+            if (card) card.classList.toggle('modal-card-fullscreen', !!opts.fullscreen);
         }
 
         function alertModal(title, message) {
@@ -2517,3 +2758,16 @@
             playBeep();
             document.getElementById('app-modal').classList.add('hidden');
         }
+
+// NEW: keep the radio / local-MP3 play-pause button icons in sync even when playback starts,
+// pauses, or ends for reasons other than the button itself being tapped (e.g. a track finishing).
+(function setupAudioElementIconSync() {
+    const radioEl = document.getElementById('radio-audio-el');
+    if (radioEl) {
+        ['play', 'pause'].forEach(evt => radioEl.addEventListener(evt, updateRadioPlayButtonIcon));
+    }
+    const localEl = document.getElementById('local-audio-el');
+    if (localEl) {
+        ['play', 'pause', 'ended'].forEach(evt => localEl.addEventListener(evt, updateLocalPlayButtonIcon));
+    }
+})();
