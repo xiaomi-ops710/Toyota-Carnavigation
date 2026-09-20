@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <base target="_top">
+    <title>Toyota T-Connect 12.3-inch HD Display Audio & Navigation</title>
+
+    <!-- NEW: this tiny script is placed FIRST, before anything else — including every external
+         resource below — specifically so it can NEVER be delayed by them. Per the HTML spec, a
+         pending external stylesheet can hold up execution of scripts that come AFTER it in the
+         document; that is almost certainly what was still stuck-in-the-splash after the Tailwind
+         fix — the Leaflet/FontAwesome/Google Fonts stylesheets below, if slow or unreachable on
+         this network, were silently delaying the app's own script further down the page from
+         running at all. This block has zero dependencies and nothing precedes it, so it always
+         runs immediately, and its timers guarantee the boot splash can never stay up forever. -->
+    <script>
+        window.addEventListener('error', function (e) {
+            try {
+                var box = document.getElementById('boot-error-box');
+                var text = document.getElementById('boot-error-text');
+                var skipBtn = document.getElementById('boot-skip-btn');
+                if (box && text) {
+                    box.classList.remove('hidden');
+                    text.innerText = e.message + ' (' + (e.filename || '').split('/').pop() + ':' + e.lineno + ')';
+                }
+                if (skipBtn) skipBtn.classList.remove('hidden');
+            } catch (_ignored) { /* the error handler itself must never throw */ }
+        });
+        setTimeout(function () {
+            var splash = document.getElementById('boot-splash');
+            if (splash) splash.classList.add('boot-hidden');
+        }, 5000);
+        setTimeout(function () {
+            var skipBtn = document.getElementById('boot-skip-btn');
+            if (skipBtn) skipBtn.classList.remove('hidden');
+        }, 1500);
+    </script>
+
+    <!-- NEW: external stylesheets loaded WITHOUT blocking rendering or script execution — the
+         media="print" + onload swap trick. If a browser doesn't support the onload swap (very
+         old browsers only), the <noscript> fallback still loads it normally. This also means
+         these fonts/icons can never again be the reason something else on the page stalls. -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" media="print" onload="this.media='all'" />
+    <noscript><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" /></noscript>
+    <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Three.js for Advanced 3D Rendering -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- FontAwesome Icons (kept only for brand logos: Apple/Bluetooth) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all'" />
+    <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" /></noscript>
+    <!-- Material Symbols (Filled) — primary icon set -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,1,0&display=swap" media="print" onload="this.media='all'" />
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,1,0&display=swap" /></noscript>
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="flex items-center justify-center min-h-screen p-1 sm:p-2 bg-slate-950">
+
+    <!-- Toyota 12.3-inch Display Audio Unit Outer Frame -->
+    <div id="toyota-bezel" class="toyota-bezel-frame w-full max-w-7xl rounded-2xl p-2 sm:p-3 shadow-2xl relative">
+        
+        <!-- Screen and Hardware Keys Layout -->
+        <div class="flex gap-2 w-full h-[600px] sm:h-[660px]">
+            
+            <!-- MAIN DISPLAY GLASS SCREEN -->
+            <div id="screen-container" class="display-glass-screen flex-1 rounded-xl flex flex-row relative shadow-inner">
+
+                <!-- NEW FEATURE: Toyota-style boot/startup splash animation (replicates factory startup screen) -->
+                <div id="boot-splash" class="absolute inset-0 z-[999] rounded-xl bg-black flex flex-col items-center justify-center overflow-hidden">
+                    <div class="boot-sheen"></div>
+                    <div id="boot-logo" class="flex flex-col items-center">
+                        <svg id="boot-emblem" width="180" height="108" viewBox="0 0 200 120" class="mb-3">
+                            <ellipse cx="100" cy="60" rx="96" ry="56" fill="none" stroke="#e5e7eb" stroke-width="5"/>
+                            <ellipse cx="100" cy="60" rx="34" ry="56" fill="none" stroke="#e5e7eb" stroke-width="5"/>
+                            <ellipse cx="100" cy="60" rx="70" ry="20" fill="none" stroke="#e5e7eb" stroke-width="5"/>
+                        </svg>
+                        <div id="boot-wordmark" class="text-white font-black tracking-[0.35em] text-3xl sm:text-4xl">TOYOTA</div>
+                        <!-- NEW: small progress indicator so the splash never LOOKS frozen even during a slow load -->
+                        <div class="mt-5 w-32 h-1 rounded-full bg-slate-800 overflow-hidden">
+                            <div id="boot-progress-bar" class="h-full bg-slate-300 rounded-full" style="width:0%; transition: width 3s linear;"></div>
+                        </div>
+                        <!-- NEW: if anything goes wrong, the actual error is shown here instead of failing silently -->
+                        <div id="boot-error-box" class="hidden mt-4 max-w-xs text-center bg-red-950/90 border border-red-600 rounded-lg px-3 py-2">
+                            <div class="text-red-300 text-[10px] font-bold">読み込み中にエラーが発生しました</div>
+                            <div id="boot-error-text" class="text-red-200 text-[9px] font-mono mt-1 break-all"></div>
+                        </div>
+                        <!-- NEW: manual skip — appears a couple seconds in, so the user is never truly stuck -->
+                        <button id="boot-skip-btn" onclick="document.getElementById('boot-splash').classList.add('boot-hidden')" class="hidden mt-4 px-4 py-1.5 rounded-full bg-slate-800/80 border border-slate-600 text-slate-300 text-[10px] font-bold active:scale-95">
+                            タップして続行 →
+                        </button>
+                    </div>
+                    <div id="boot-caution" class="absolute bottom-8 left-0 right-0 text-center px-6">
+                        <div class="inline-block bg-gradient-to-r from-transparent via-slate-800/70 to-transparent px-4 py-2 rounded">
+                            <p class="text-white text-[11px] sm:text-xs font-bold leading-relaxed">安全運転のために運転される方は走行中に操作しないでください</p>
+                            <p class="text-white text-[11px] sm:text-xs font-bold leading-relaxed">走行する際は実際の交通規制に従ってください</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- TOYOTA LEFT DOCK BAR -->
+                <div class="toyota-side-dock w-16 sm:w-20 h-full flex flex-col justify-between items-center py-3 z-30 select-none">
+                    <div class="flex flex-col gap-3 w-full items-center">
+                        <!-- Toyota Crown Logo / Home Button -->
+                        <button onclick="toggleTConnectMenu()" class="w-12 h-12 rounded-xl flex flex-col items-center justify-center text-cyan-400 hover:text-white transition active:scale-95">
+                            <span class="material-symbols-filled text-2xl" >apps</span>
+                            <span class="text-[9px] font-bold mt-0.5">MENU</span>
+                        </button>
+                        
+                        <div class="w-10 h-[1px] bg-slate-800"></div>
+
+                        <!-- Dock Items -->
+                        <button id="dock-nav" onclick="switchDockTab('nav')" class="dock-btn active w-full py-2.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-xl" >navigation</span>
+                            <span class="text-[10px] font-extrabold mt-1">マップ</span>
+                        </button>
+                        
+                        <button id="dock-audio" onclick="switchDockTab('audio')" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-xl" >music_note</span>
+                            <span class="text-[10px] font-extrabold mt-1">オーディオ</span>
+                        </button>
+
+                        <button id="dock-phone" onclick="launchCarPlayPhone()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-xl" >call</span>
+                            <span class="text-[10px] font-extrabold mt-1">電話</span>
+                        </button>
+
+                        <button id="dock-car" onclick="openVehicleInfo()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-xl" >directions_car</span>
+                            <span class="text-[10px] font-extrabold mt-1">車両情報</span>
+                        </button>
+
+                        <!-- NEW FEATURE 1: Dashcam Feed Direct Dock Switch -->
+                        <button id="dock-dashcam" onclick="openDashcamModal()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center" title="ドライブレコーダー">
+                            <span class="material-symbols-filled text-xl text-red-400" >videocam</span>
+                            <span class="text-[9px] font-extrabold mt-0.5 text-red-300">ドラレコ</span>
+                        </button>
+                    </div>
+
+                    <div class="flex flex-col gap-2.5 w-full items-center">
+                        <button id="dock-settings" onclick="openUserSettings()" class="dock-btn w-full py-1.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-lg" >settings</span>
+                            <span class="text-[9px] font-bold mt-0.5">設定</span>
+                        </button>
+                        <!-- Voice Agent "Hey Toyota" Trigger Button -->
+                        <button onclick="triggerVoiceAgent()" class="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-700 to-cyan-500 text-white flex items-center justify-center shadow-lg active:scale-90 transition pulse-glow">
+                            <span class="material-symbols-filled text-lg" >mic</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- MAIN DISPLAY CONTENT AREA -->
+                <div class="flex-1 h-full flex flex-col relative overflow-hidden">
+                    
+                    <!-- TOP STATUS BAR -->
+                    <div class="h-9 bg-slate-950/90 backdrop-blur border-b border-slate-800/80 px-4 flex items-center justify-between text-xs z-20">
+                        <div class="flex items-center gap-3">
+                            <span id="top-clock" class="digital-font text-lg font-bold text-white tracking-wider">17:42</span>
+                            <button onclick="toggleWeatherOverlay()" class="text-slate-300 hover:text-white font-bold text-xs flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded-full">
+                                <span class="material-symbols-filled text-cyan-400"  id="weather-icon">partly_cloudy_day</span>
+                                <span id="ext-temp" class="text-white digital-font">22</span>°C
+                                <span id="weather-desc" class="text-[10px] text-slate-400">晴れ</span>
+                            </button>
+                            
+                            <!-- Drive Mode Badge -->
+                            <button onclick="cycleDriveMode()" id="drive-mode-badge" class="bg-blue-900/80 border border-blue-500 text-cyan-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125">
+                                MODE: NORMAL
+                            </button>
+
+                            <!-- Audio Playing Mini Banner -->
+                            <div onclick="switchDockTab('audio')" class="cursor-pointer flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 px-3 py-0.5 rounded-full text-[11px]">
+                                <span id="mini-audio-icon" class="fa-brands fa-apple text-pink-400"></span>
+                                <span id="top-audio-track" class="text-slate-200 font-bold truncate max-w-[150px]">Apple Music - 再生中</span>
+                            </div>
+                        </div>
+
+                        <!-- Center Active Guidance Direction Tag -->
+                        <div id="top-route-banner" class="hidden flex items-center gap-2 bg-blue-950/90 border border-blue-500/70 px-4 py-0.5 rounded-full text-cyan-200 text-xs font-bold shadow-md">
+                            <span class="material-symbols-filled text-amber-400 animate-bounce" >turn_right</span>
+                            <span id="route-type-badge" class="bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded font-black">AI推奨</span>
+                            <span id="banner-next-turn" class="font-extrabold">首都高速 都心環状線 方面</span>
+                        </div>
+
+                        <!-- Right Wireless / Safety Badges -->
+                        <div class="flex items-center gap-2.5 text-slate-400 text-xs">
+                            <button id="btn-sim-speed" onclick="cycleSimSpeed()" class="hidden bg-purple-900/80 hover:bg-purple-800 border border-purple-500 text-purple-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                                <span class="material-symbols-filled mr-1" >speed</span><span id="speed-text">1x 速度</span>
+                            </button>
+                            <button onclick="toggle3DJunctionEnable()" id="btn-3d-jct-toggle" class="bg-indigo-900/80 hover:bg-indigo-800 border border-indigo-500 text-indigo-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                                <span class="material-symbols-filled mr-1" >view_in_ar</span><span id="label-3d-toggle">3D案内: ON</span>
+                            </button>
+                            <button onclick="toggleSafetyAssist()" id="btn-safety-toggle" class="bg-red-900/80 hover:bg-red-800 border border-red-500 text-red-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                                <span class="material-symbols-filled mr-1" >shield</span><span id="label-safety-toggle">安全支援: ON</span>
+                            </button>
+                            <button onclick="openAdvancedParkModal()" class="bg-cyan-900/80 hover:bg-cyan-800 border border-cyan-500 text-cyan-200 text-[9px] font-black px-2 py-0.5 rounded shadow">
+                                <span class="material-symbols-filled mr-1" >local_parking</span>360° Park
+                            </button>
+                            <span class="bg-emerald-600/90 text-white text-[9px] font-black px-2 py-0.5 rounded shadow">CarPlay</span>
+                            <span class="material-symbols-filled text-emerald-400"  title="Toyota Safety Sense">shield</span>
+                            <i class="fa-brands fa-bluetooth-b text-blue-400"></i>
+                            <span class="material-symbols-filled text-emerald-400" >signal_cellular_alt</span>
+                        </div>
+                    </div>
+
+                    <!-- MAP & 3D SPLIT VIEWPORT CONTAINER -->
+                    <div class="flex-1 relative flex">
+                        
+                        <!-- MAP CANVAS SECTION -->
+                        <div id="map-section" class="relative flex-1 h-full overflow-hidden">
+                            <!-- NEW FEATURE: reappears once the user drags the map away during guidance -->
+                            <button id="btn-recenter-map" onclick="reCenterMap()" class="hidden absolute top-24 right-3 z-20 bg-blue-600 hover:bg-blue-500 text-white rounded-full w-11 h-11 flex items-center justify-center shadow-xl border-2 border-blue-400" title="現在地に戻る">
+                                <span class="material-symbols-filled">my_location</span>
+                            </button>
+
+                            <!-- Weather Effect Layer -->
+                            <div id="weather-layer" class="hidden absolute inset-0 z-10 rain-overlay pointer-events-none flex items-center justify-center">
+                                <div class="bg-slate-900/90 border border-blue-400 text-cyan-300 text-xs px-3 py-1.5 rounded-full font-bold shadow-2xl">
+                                    <span class="material-symbols-filled mr-2 text-blue-400" >rainy</span>路面ウエット注意・視界補助モードアクティブ
+                                </div>
+                            </div>
+
+                            <!-- NEW FEATURE: Toyota Safety Sense HUD-style Alert Banner -->
+                            <div id="safety-hud-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+                                <div id="safety-hud-inner" class="flex items-center gap-2 px-5 py-2 rounded-xl border-2 shadow-2xl font-black text-sm backdrop-blur">
+                                    <span id="safety-hud-icon" class="material-symbols-filled text-2xl">warning</span>
+                                    <span id="safety-hud-text">前方注意</span>
+                                </div>
+                            </div>
+
+                            <!-- NEW FEATURE: Live Speed / Speed-limit Readout (PDA-style) -->
+                            <div class="absolute top-3 right-3 z-10 flex flex-col items-center gap-1">
+                                <div id="speed-readout-box" class="bg-slate-900/95 backdrop-blur border-2 border-slate-700 rounded-2xl w-16 h-16 flex flex-col items-center justify-center shadow-xl">
+                                    <span id="current-speed-text" class="digital-font text-2xl font-black text-white leading-none">0</span>
+                                    <span class="text-[8px] text-slate-400 font-bold">km/h</span>
+                                </div>
+                                <div class="bg-white border-2 border-red-600 rounded-full w-9 h-9 flex items-center justify-center shadow-lg">
+                                    <span id="speed-limit-text" class="text-red-700 font-black text-xs">60</span>
+                                </div>
+                            </div>
+
+                            <!-- Leaflet Map Element -->
+                            <div id="map" class="absolute inset-0 w-full h-full z-0"></div>
+
+                            <!-- OVERLAY: Map Quick Floating Controls Stack -->
+                            <div class="absolute top-3 left-3 z-10 flex flex-col gap-2 pointer-events-auto">
+                                <!-- Heading Compass Toggle -->
+                                <button id="btn-compass" onclick="toggleHeadingMode()" class="w-11 h-11 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl flex items-center justify-center text-white shadow-xl active:scale-90 transition">
+                                    <div id="compass-arrow" class="transition-transform duration-300">
+                                        <span class="material-symbols-filled text-red-500 text-2xl" >explore</span>
+                                    </div>
+                                </button>
+
+                                <!-- VICS Traffic Live Box -->
+                                <div class="bg-slate-900/95 backdrop-blur border border-red-800 px-2 py-1.5 rounded-lg text-center shadow-xl">
+                                    <div class="flex items-center justify-between gap-1">
+                                        <span class="text-[9px] bg-red-600 text-white font-black px-1 rounded">VICS</span>
+                                        <span id="vics-time" class="text-[10px] text-slate-300 digital-font">17:42</span>
+                                    </div>
+                                    <div class="text-[9px] text-slate-300 font-bold mt-0.5">首都高 順調</div>
+                                </div>
+
+                                <!-- Destination ETA & Distance Widget -->
+                                <div id="goal-panel" class="bg-slate-900/95 backdrop-blur border border-slate-700 rounded-xl p-2.5 text-white shadow-2xl w-36 flex flex-col">
+                                    <div class="flex items-center justify-between text-[10px] text-slate-400 font-bold border-b border-slate-800 pb-1">
+                                        <span class="text-red-400 font-black"><span class="material-symbols-filled mr-1" >location_on</span>目的地</span>
+                                        <div class="flex items-center gap-1">
+                                            <span id="etc-toll-badge" class="hidden text-[9px] bg-amber-600 text-white px-1 rounded font-bold">ETC 780円</span>
+                                            <button onclick="addFavorite(currentDestName, destinationPos ? destinationPos[0] : 0, destinationPos ? destinationPos[1] : 0)" class="text-amber-400 hover:text-amber-300" title="お気に入りに追加">
+                                                <span class="material-symbols-filled text-xs">star</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-baseline justify-between mt-1">
+                                        <span id="eta-time" class="text-2xl font-black text-emerald-400 digital-font">18:25</span>
+                                        <span class="text-[10px] text-slate-300 font-bold">到着予定</span>
+                                    </div>
+                                    <div class="flex items-center justify-between mt-1 text-xs font-bold text-slate-200 border-t border-slate-800/80 pt-1">
+                                        <span class="text-cyan-400 text-[10px]"><span class="material-symbols-filled" >alt_route</span> 残り</span>
+                                        <span id="eta-dist" class="digital-font text-white font-black text-sm">14.8 km</span>
+                                    </div>
+                                </div>
+
+                                <!-- Map Zoom Steppers -->
+                                <div class="bg-slate-900/95 backdrop-blur border border-slate-700 rounded-xl flex flex-col divide-y divide-slate-800 shadow-xl overflow-hidden w-11">
+                                    <button onclick="zoomIn()" class="p-2.5 text-slate-200 hover:text-white hover:bg-slate-800 flex justify-center active:bg-blue-600">
+                                        <span class="material-symbols-filled" >add</span>
+                                    </button>
+                                    <div class="py-1 text-center text-[10px] font-black digital-font text-cyan-300 bg-black/60">
+                                        <span id="scale-text">200m</span>
+                                    </div>
+                                    <button onclick="zoomOut()" class="p-2.5 text-slate-200 hover:text-white hover:bg-slate-800 flex justify-center active:bg-blue-600">
+                                        <span class="material-symbols-filled" >remove</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- OVERLAY: Bottom Road Name Tag -->
+                            <div class="absolute bottom-12 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+                                <div class="bg-gradient-to-r from-blue-900/90 via-blue-700/90 to-blue-900/90 border border-blue-400/80 text-white px-6 py-1.5 rounded-full text-xs sm:text-sm font-black shadow-2xl flex items-center gap-2 backdrop-blur">
+                                    <span class="material-symbols-filled text-cyan-300" >shield</span>
+                                    <span id="current-road-text">東京都道414号線 (四谷角筈線)</span>
+                                </div>
+                            </div>
+
+                            <!-- OVERLAY: HIGH-GRAPHICS DYNAMIC 3D REALISTIC JUNCTION VIEW ENGINE -->
+                            <div id="junction-3d-container" class="hidden absolute top-0 right-0 bottom-10 w-1/2 z-20 bg-slate-950 border-l-2 border-blue-500 shadow-2xl flex flex-col animate-fade-in">
+                                <!-- Top Junction Destination Sign Banner -->
+                                <div class="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-b border-blue-500/60 p-2 flex items-center justify-between">
+                                    <div class="flex items-center gap-2">
+                                        <div class="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black text-lg shadow-lg border border-blue-400">
+                                            <span class="material-symbols-filled text-cyan-200"  id="jct-turn-icon">turn_right</span>
+                                        </div>
+                                        <div>
+                                            <div id="jct-title" class="text-xs font-black text-white truncate max-w-[140px]">首都高 分岐 Junction</div>
+                                            <div id="jct-distance" class="text-[10px] text-cyan-300 font-extrabold digital-font">あと 180m (実地形追従3D)</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="flex items-center gap-1.5">
+                                        <!-- Lane Guidance Arrow Strip -->
+                                        <div class="hidden sm:flex gap-1 bg-black/80 px-2 py-0.5 rounded border border-slate-700 text-yellow-400 font-black text-xs digital-font">
+                                            <span class="text-slate-500">↑</span>
+                                            <span class="text-amber-400 animate-pulse">↱ 分岐へ</span>
+                                        </div>
+                                        <!-- Button to turn off 3D Junction -->
+                                        <button onclick="toggle3DJunctionEnable(false)" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold px-2 py-1 rounded border border-slate-600" title="3D非表示">
+                                            <span class="material-symbols-filled" >close</span> OFF
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- THREE.JS / DYNAMIC 3D SCENE GRAPHICS CONTAINER -->
+                                <div id="jct-canvas-parent" class="flex-1 relative bg-slate-950 overflow-hidden flex items-center justify-center">
+                                    <!-- Canvas Wrapper -->
+                                    <div id="three-jct-canvas-container" class="w-full h-full absolute inset-0 z-0"></div>
+                                    
+                                    <!-- Overhead Highway Sign Board Overlay -->
+                                    <div class="absolute top-2 left-2 z-10 bg-gradient-to-r from-green-800/90 to-emerald-900/90 border border-emerald-400 text-white px-2.5 py-1 rounded-lg font-bold text-[10px] shadow-2xl flex items-center gap-2 backdrop-blur">
+                                        <span class="material-symbols-filled text-amber-300 text-sm" >signpost</span>
+                                        <div>
+                                            <div class="text-[8px] text-emerald-200">首都高速 進行方向</div>
+                                            <div id="jct-sign-text" class="font-extrabold text-xs">都心環状線・新宿 方面</div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 3D Camera Perspective Switch Button -->
+                                    <button onclick="toggle3DCameraView()" class="absolute bottom-2 right-2 z-10 bg-slate-900/90 hover:bg-slate-800 text-white border border-slate-700 px-2 py-1 rounded-lg text-[10px] font-bold shadow-lg flex items-center gap-1">
+                                        <span class="material-symbols-filled text-cyan-400" >videocam</span> <span id="camera-view-name">ドローン視点</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- OVERLAY: Bottom Navigation Control Toolbar Buttons -->
+                            <div class="absolute bottom-0 left-0 right-0 z-20 p-1 bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent flex justify-between gap-1 pointer-events-auto">
+                                <button onclick="zoomIn()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-white bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">詳細</button>
+                                <button id="btn-guidance-toggle" onclick="toggleGuidanceOff()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-slate-200 bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">
+                                    <span id="label-guidance">≪Off</span>
+                                </button>
+                                <button onclick="openDestinationModal()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-cyan-300 bg-slate-900 border border-cyan-600/60 hover:bg-cyan-950 shadow">目的地</button>
+                                <button onclick="openDisplayChangeModal()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-white bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">表示変更</button>
+                                <button onclick="recalculateRoute()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-amber-300 bg-slate-900 border border-amber-600/60 hover:bg-amber-950 shadow">再探索</button>
+                                <button onclick="getCurrentLocation(true)" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-emerald-400 bg-slate-900 border border-emerald-600/60 hover:bg-emerald-950 shadow">現在地</button>
+                                <button onclick="zoomOut()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-white bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">広域</button>
+                            </div>
+                        </div>
+
+                        <!-- RIGHT SECTION: TOYOTA CLIMATE CONTROL & HYBRID SPLIT PANEL -->
+                        <div id="split-climate-panel" class="w-72 climate-slider-bg h-full flex flex-col justify-between p-3 relative z-10 border-l border-slate-800 transition-all duration-300">
+                            <!-- Climate Header -->
+                            <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-base font-black text-white">エアコン</span>
+                                    <span class="text-[9px] font-bold text-cyan-400 bg-cyan-950 border border-cyan-800 px-1.5 py-0.5 rounded-md">nanoe X</span>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="openClimateOptions()" class="text-[11px] font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700 hover:bg-slate-700">
+                                        詳細設定
+                                    </button>
+                                    <!-- NEW FEATURE: hide the climate panel to widen the map -->
+                                    <button onclick="toggleClimatePanel(false)" class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700" title="エアコン表示を消す">
+                                        <span class="material-symbols-filled text-sm">close</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Temperature Dual Dial Controls -->
+                            <div class="flex-1 py-2 flex flex-col justify-between">
+                                <div class="grid grid-cols-2 gap-2 h-full max-h-[300px]">
+                                    <!-- Driver Temp Dial -->
+                                    <div class="flex flex-col justify-between items-center bg-slate-900/80 rounded-2xl p-2 border border-slate-800 shadow-lg">
+                                        <span class="text-[10px] font-black text-slate-400">DRIVER</span>
+                                        <span id="driver-temp-text" class="digital-font text-3xl font-black text-white my-1">25.0</span>
+                                        <div class="flex flex-col gap-1.5 w-full">
+                                            <button onclick="changeDriverTemp(0.5)" class="py-2 rounded-xl bg-slate-800 hover:bg-blue-600 text-white font-bold flex justify-center border border-slate-700 active:scale-95 transition">
+                                                <span class="material-symbols-filled" >expand_less</span>
+                                            </button>
+                                            <button onclick="changeDriverTemp(-0.5)" class="py-2 rounded-xl bg-slate-800 hover:bg-blue-600 text-white font-bold flex justify-center border border-slate-700 active:scale-95 transition">
+                                                <span class="material-symbols-filled" >expand_more</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Passenger Temp Dial -->
+                                    <div class="flex flex-col justify-between items-center bg-slate-900/80 rounded-2xl p-2 border border-slate-800 shadow-lg">
+                                        <span class="text-[10px] font-black text-slate-400">PASSENGER</span>
+                                        <span id="passenger-temp-text" class="digital-font text-3xl font-black text-white my-1">25.0</span>
+                                        <div class="flex flex-col gap-1.5 w-full">
+                                            <button onclick="changePassengerTemp(0.5)" class="py-2 rounded-xl bg-slate-800 hover:bg-blue-600 text-white font-bold flex justify-center border border-slate-700 active:scale-95 transition">
+                                                <span class="material-symbols-filled" >expand_less</span>
+                                            </button>
+                                            <button onclick="changePassengerTemp(-0.5)" class="py-2 rounded-xl bg-slate-800 hover:bg-blue-600 text-white font-bold flex justify-center border border-slate-700 active:scale-95 transition">
+                                                <span class="material-symbols-filled" >expand_more</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Airflow Vent Mode & Fan Speed Level -->
+                                <div class="my-2 bg-slate-950 p-2 rounded-xl border border-slate-800 flex items-center justify-around">
+                                    <button onclick="cycleVentMode()" class="flex flex-col items-center text-cyan-400 active:scale-95 transition">
+                                        <span class="material-symbols-filled text-xl"  id="vent-mode-icon">person</span>
+                                        <span id="vent-mode-label" class="text-[9px] font-bold mt-1 text-slate-300">FACE / FEET</span>
+                                    </button>
+
+                                    <div class="flex items-center gap-1.5">
+                                        <button onclick="changeFanSpeed(-1)" class="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-white active:scale-95">
+                                            -
+                                        </button>
+                                        <div class="flex gap-1 items-end h-5">
+                                            <div id="fan-bar-1" class="w-1.5 h-2 bg-blue-500 rounded-sm"></div>
+                                            <div id="fan-bar-2" class="w-1.5 h-3 bg-blue-500 rounded-sm"></div>
+                                            <div id="fan-bar-3" class="w-1.5 h-4 bg-blue-500 rounded-sm"></div>
+                                            <div id="fan-bar-4" class="w-1.5 h-5 bg-slate-700 rounded-sm"></div>
+                                            <div id="fan-bar-5" class="w-1.5 h-6 bg-slate-700 rounded-sm"></div>
+                                        </div>
+                                        <button onclick="changeFanSpeed(1)" class="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-white active:scale-95">
+                                            +
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Climate Function Switches -->
+                                <div class="grid grid-cols-4 gap-1 text-[10px] font-bold">
+                                    <button id="btn-ac-toggle" onclick="toggleAC()" class="py-2 bg-blue-600 text-white rounded-lg text-center border border-blue-400">
+                                        A/C
+                                    </button>
+                                    <button id="btn-dual-toggle" onclick="toggleDual()" class="py-2 bg-slate-800 text-slate-300 rounded-lg text-center border border-slate-700">
+                                        DUAL
+                                    </button>
+                                    <button id="btn-eco-toggle" onclick="toggleEcoMode()" class="py-2 bg-slate-800 text-slate-300 rounded-lg text-center border border-slate-700">
+                                        ECO
+                                    </button>
+                                    <button id="btn-recirc-toggle" onclick="toggleRecirculation()" class="py-2 bg-slate-800 text-slate-300 rounded-lg text-center border border-slate-700">
+                                        <span class="material-symbols-filled text-sm" >autorenew</span><br>内気循環
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- NEW FEATURE: re-open tab shown when climate panel is hidden -->
+                        <button id="btn-climate-reopen" onclick="toggleClimatePanel(true)" class="hidden absolute right-0 top-1/2 -translate-y-1/2 z-20 bg-slate-800 hover:bg-slate-700 border border-slate-700 border-r-0 rounded-l-xl px-1.5 py-3 flex flex-col items-center gap-1 text-slate-300 shadow-lg" title="エアコン表示を出す">
+                            <span class="material-symbols-filled text-sm">chevron_left</span>
+                            <span class="text-[9px] font-bold [writing-mode:vertical-rl]">エアコン</span>
+                        </button>
+
+                    </div>
+
+                <!-- CARPLAY, SPOTIFY, YOUTUBE & APPLE MUSIC INTEGRATED OVERLAY SCREEN -->
+                <div id="carplay-overlay" class="hidden absolute inset-0 bg-black z-40 flex flex-col text-white animate-fade-in">
+                    <!-- Top CarPlay Header -->
+                    <div class="bg-slate-950 px-4 py-2 border-b border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <i class="fa-brands fa-apple text-2xl text-white"></i>
+                            <span class="font-bold text-sm">Apple CarPlay - 音楽＆オーディオプレイヤー</span>
+                        </div>
+                        <button onclick="closeCarPlayOverlay()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1 rounded-full text-xs font-bold border border-slate-700">
+                            T-Connectに戻る
+                        </button>
+                    </div>
+
+                    <!-- Audio Player Interactive Area -->
+                    <div class="flex-1 flex flex-col md:flex-row bg-slate-950 overflow-hidden">
+                        <!-- Left CarPlay Side Music Navigation -->
+                        <div class="w-full md:w-64 bg-slate-900/90 border-r border-slate-800 p-3 flex flex-col justify-between">
+                            <div class="space-y-2">
+                                <div class="text-xs font-bold text-slate-400 px-2">オーディオアプリ選択</div>
+                                
+                                <!-- Apple Music Switch Button -->
+                                <button id="app-btn-applemusic" onclick="switchAudioSource('applemusic')" class="w-full p-2.5 rounded-xl bg-pink-950/80 border border-pink-500 text-left text-xs font-bold text-pink-200 flex items-center gap-2 shadow">
+                                    <i class="fa-brands fa-apple text-pink-400 text-xl"></i> Apple Music (公式Web)
+                                </button>
+
+                                <!-- ラジオ (radiojapan.org) Switch Button -->
+                                <button id="app-btn-radio" onclick="switchAudioSource('radio')" class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left text-xs font-bold text-slate-300 flex items-center gap-2">
+                                    <span class="material-symbols-filled text-red-400 text-xl">radio</span> ラジオ
+                                </button>
+
+                                <div class="flex items-center justify-between px-2 pt-2">
+                                    <div class="text-xs font-bold text-slate-400">クイックリンク</div>
+                                    <button onclick="openMyPlaylistsModal()" class="text-[9px] font-bold text-amber-300 hover:text-amber-200 flex items-center gap-0.5">
+                                        <span class="material-symbols-filled text-xs">star</span> マイプレイリスト
+                                    </button>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="navigateAppleMusic('https://embed.music.apple.com/jp/playlist/%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%82%BD%E3%83%B3%E3%82%B0-j-pop-%E3%83%92%E3%83%83%E3%83%84/pl.d9ad642a094348a1af7c70185c4892bd', 'https://music.apple.com/jp/playlist/%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%82%BD%E3%83%B3%E3%82%B0-j-pop-%E3%83%92%E3%83%83%E3%83%84/pl.d9ad642a094348a1af7c70185c4892bd', 'ドライブソング：J-Pop ヒッツ')" class="flex-1 p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-bold text-pink-300 flex items-center gap-2 min-w-0">
+                                        <span class="material-symbols-filled text-pink-400 text-base" >album</span> <span class="truncate">ドライブソング: J-Pop ヒッツ</span>
+                                    </button>
+                                    <button onclick="togglePlaylistFavorite('ドライブソング: J-Pop ヒッツ', 'https://embed.music.apple.com/jp/playlist/%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%82%BD%E3%83%B3%E3%82%B0-j-pop-%E3%83%92%E3%83%83%E3%83%84/pl.d9ad642a094348a1af7c70185c4892bd', 'https://music.apple.com/jp/playlist/%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%82%BD%E3%83%B3%E3%82%B0-j-pop-%E3%83%92%E3%83%83%E3%83%84/pl.d9ad642a094348a1af7c70185c4892bd', this)" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-500 hover:text-amber-300" title="お気に入り登録">
+                                        <span class="material-symbols-filled text-sm">star</span>
+                                    </button>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="navigateAppleMusic('https://embed.music.apple.com/jp/playlist/j-pop-%E3%83%92%E3%83%83%E3%83%84-%E3%83%93%E3%83%87%E3%82%AA/pl.e5a8113d5f0e46edb25db01aabd7372b', 'https://music.apple.com/jp/playlist/j-pop-%E3%83%92%E3%83%83%E3%83%84-%E3%83%93%E3%83%87%E3%82%AA/pl.e5a8113d5f0e46edb25db01aabd7372b', 'J-Pop ヒッツ')" class="flex-1 p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-bold text-slate-200 flex items-center gap-2 min-w-0">
+                                        <span class="material-symbols-filled text-blue-400 text-base" >checklist</span> <span class="truncate">J-Pop ヒッツ</span>
+                                    </button>
+                                    <button onclick="togglePlaylistFavorite('J-Pop ヒッツ', 'https://embed.music.apple.com/jp/playlist/j-pop-%E3%83%92%E3%83%83%E3%83%84-%E3%83%93%E3%83%87%E3%82%AA/pl.e5a8113d5f0e46edb25db01aabd7372b', 'https://music.apple.com/jp/playlist/j-pop-%E3%83%92%E3%83%83%E3%83%84-%E3%83%93%E3%83%87%E3%82%AA/pl.e5a8113d5f0e46edb25db01aabd7372b', this)" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-500 hover:text-amber-300" title="お気に入り登録">
+                                        <span class="material-symbols-filled text-sm">star</span>
+                                    </button>
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="navigateAppleMusic('https://embed.music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb', 'https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb', &quot;Today's Hits&quot;)" class="flex-1 p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-bold text-slate-200 flex items-center gap-2 min-w-0">
+                                        <span class="material-symbols-filled text-amber-400 text-base" >local_fire_department</span> <span class="truncate">Today's Hits</span>
+                                    </button>
+                                    <button onclick="togglePlaylistFavorite(&quot;Today's Hits&quot;, 'https://embed.music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb', 'https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb', this)" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-500 hover:text-amber-300" title="お気に入り登録">
+                                        <span class="material-symbols-filled text-sm">star</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Official Link External Opener -->
+                            <div class="border-t border-slate-800 pt-3 space-y-1.5">
+                                <a id="audio-external-link" href="https://music.apple.com/jp/playlist/%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%82%BD%E3%83%B3%E3%82%B0-j-pop-%E3%83%92%E3%83%83%E3%83%84/pl.d9ad642a094348a1af7c70185c4892bd" target="_blank" rel="noopener" class="w-full py-2 bg-pink-600 hover:bg-pink-500 rounded-xl font-bold text-xs text-white flex items-center justify-center gap-2 shadow">
+                                    <span id="audio-external-link-icon" class="material-symbols-filled text-sm">open_in_new</span> <span id="audio-external-link-text">別タブでApple Musicを開く</span>
+                                </a>
+                            </div>
+                        </div>
+
+                        <!-- Right Audio Player Browser Display -->
+                        <div class="flex-1 bg-black flex flex-col p-1 relative">
+                            <!-- Address / Navigation Bar for Web Player -->
+                            <div class="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex items-center gap-2 text-xs">
+                                <button onclick="refreshAudioIframe()" class="p-1 text-slate-400 hover:text-white" title="更新">
+                                    <span class="material-symbols-filled" >refresh</span>
+                                </button>
+                                <div class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1 text-[11px] text-slate-300 font-mono truncate flex items-center gap-2">
+                                    <span class="material-symbols-filled text-emerald-400 text-[10px]" >lock</span>
+                                    <span id="player-current-url">https://embed.music.apple.com/jp/playlist/...</span>
+                                </div>
+                            </div>
+
+                            <!-- Embedded Interactive Browser Frame (uses Apple's official embed.music.apple.com player, which -
+                                 unlike a normal music.apple.com page - actually allows itself to be shown inside an iframe) -->
+                            <div id="audio-player-wrap" class="w-full flex-1 relative bg-slate-950 rounded-b-xl overflow-hidden">
+                                <iframe id="audio-player-iframe" class="w-full h-full rounded-b-xl border-none shadow-2xl bg-slate-950"
+                                    src="https://embed.music.apple.com/jp/playlist/%E3%83%89%E3%83%A9%E3%82%A4%E3%83%96%E3%82%BD%E3%83%B3%E3%82%B0-j-pop-%E3%83%92%E3%83%83%E3%83%84/pl.d9ad642a094348a1af7c70185c4892bd"
+                                    title="Apple Music Embedded Player"
+                                    allow="autoplay *; encrypted-media *; fullscreen *; clipboard-write"
+                                    sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-storage-access-by-user-activation allow-top-navigation-by-user-activation"
+                                    loading="lazy"
+                                    onerror="showAudioEmbedFallback()">
+                                </iframe>
+                                <!-- Fallback shown if the embedded player cannot load (offline, blocked, etc.) -->
+                                <div id="audio-embed-fallback" class="hidden absolute inset-0 bg-slate-950 flex flex-col items-center justify-center text-center p-6 gap-3">
+                                    <span id="audio-fallback-icon" class="material-symbols-filled text-5xl text-pink-400">error</span>
+                                    <div class="text-sm font-bold text-white">プレイヤーを読み込めませんでした</div>
+                                    <div id="audio-fallback-text" class="text-xs text-slate-400 max-w-xs">ネットワーク環境により埋め込みプレーヤーを表示できません。下のボタンから直接お楽しみください。</div>
+                                    <a id="audio-fallback-link" href="https://music.apple.com/jp/new" target="_blank" rel="noopener" class="mt-1 py-2 px-4 bg-pink-600 hover:bg-pink-500 rounded-xl font-bold text-xs text-white flex items-center gap-2 shadow">
+                                        <span class="material-symbols-filled text-sm">open_in_new</span> <span id="audio-fallback-link-text">別タブで開く</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- T-CONNECT MENU OVERLAY FULL SCREEN -->
+                <div id="tconnect-menu" class="hidden absolute inset-0 bg-[#090c12] z-40 flex flex-col text-white overflow-hidden animate-fade-in">
+                    <div class="bg-slate-950 px-4 py-3 flex items-center justify-between border-b border-slate-800 text-xs">
+                        <div class="flex items-center gap-3">
+                            <span class="font-black text-slate-100 tracking-wider text-sm"><span class="material-symbols-filled text-cyan-400 mr-1.5" >apps</span>T-Connect サービスメニュー</span>
+                            <span class="bg-red-700 text-white font-bold px-2 py-0.5 rounded text-[10px]">HELPNET 接続OK</span>
+                        </div>
+                        <button onclick="closeTConnectMenu()" class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-white">
+                            <span class="material-symbols-filled" >close</span>
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-4 gap-3 p-4 flex-1 overflow-y-auto">
+                        <button onclick="openUserSettings()" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-blue-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-cyan-400 mb-2" >tune</span>
+                            <span class="text-xs font-bold">先進運転支援・ナビ設定</span>
+                        </button>
+
+                        <button onclick="openCarPlayAudio('applemusic')" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-pink-500 transition active:scale-95">
+                            <i class="fa-brands fa-apple text-3xl text-pink-400 mb-2"></i>
+                            <span class="text-xs font-bold">Apple Music オーディオ</span>
+                        </button>
+
+                        <button onclick="openCarPlayAudio('radio')" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-red-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-red-400 mb-2">radio</span>
+                            <span class="text-xs font-bold">ラジオ</span>
+                        </button>
+
+                        <button onclick="openDashcamModal()" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-red-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-red-400 mb-2" >videocam</span>
+                            <span class="text-xs font-bold">ドライブレコーダー</span>
+                        </button>
+
+                        <button onclick="openAdvancedParkModal()" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-cyan-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-cyan-400 mb-2" >local_parking</span>
+                            <span class="text-xs font-bold">360° アドバンストパーク</span>
+                        </button>
+
+                        <button onclick="openVoiceLogModal()" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-blue-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-blue-400 mb-2" >smart_toy</span>
+                            <span class="text-xs font-bold">AIアシスタント対話ログ</span>
+                        </button>
+
+                        <button onclick="openVehicleInfo()" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-emerald-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-emerald-400 mb-2" >eco</span>
+                            <span class="text-xs font-bold">HVエネルギーモニター</span>
+                        </button>
+
+                        <button onclick="openNearbyPOI('convenience')" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-amber-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-amber-400 mb-2" >storefront</span>
+                            <span class="text-xs font-bold">周辺コンビニ</span>
+                        </button>
+
+                        <button onclick="openNearbyPOI('gas_station')" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-cyan-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-cyan-400 mb-2" >local_gas_station</span>
+                            <span class="text-xs font-bold">GS / EV充電スポット</span>
+                        </button>
+
+                        <button onclick="openNearbyPOI('parking')" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-indigo-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-indigo-400 mb-2">local_parking</span>
+                            <span class="text-xs font-bold">周辺駐車場</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- GENERIC SYSTEM MODAL -->
+                <div id="app-modal" class="hidden absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+                    <div class="bg-slate-900 border-2 border-slate-700 rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col animate-fade-in">
+                        <div class="bg-slate-800 px-5 py-4 border-b border-slate-700 flex items-center justify-between">
+                            <h3 id="modal-title" class="font-black text-base sm:text-lg text-cyan-400 flex items-center gap-2">
+                                <span class="material-symbols-filled" >info</span> 設定
+                            </h3>
+                            <button onclick="closeModal()" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 active:scale-95 transition text-xl">
+                                <span class="material-symbols-filled" >close</span>
+                            </button>
+                        </div>
+                        <div id="modal-body" class="p-5 text-xs leading-relaxed text-slate-200 max-h-[70vh] overflow-y-auto"></div>
+                        <div id="modal-footer" class="bg-slate-950 px-5 py-3 border-t border-slate-800 flex justify-end gap-2">
+                            <button onclick="closeModal()" class="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 font-bold text-xs text-white border border-slate-700">
+                                閉じる
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                </div>
+
+            <!-- RIGHT SIDE HARDWARE TOUCH STRIP -->
+            <div class="w-12 sm:w-14 flex flex-col gap-2 justify-between py-1 select-none">
+                <button onclick="zoomIn()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="詳細">
+                    <span class="material-symbols-filled text-base" >add</span>
+                </button>
+                <button onclick="zoomOut()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="広域">
+                    <span class="material-symbols-filled text-base" >remove</span>
+                </button>
+                <button onclick="getCurrentLocation(true)" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center">
+                    <span class="material-symbols-filled text-base text-emerald-400" >my_location</span>
+                </button>
+                <button id="btn-split-toggle" onclick="toggleSplitScreen()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center active" title="スプリット切替">
+                    <span class="material-symbols-filled text-base text-cyan-400" >splitscreen</span>
+                </button>
+                <button onclick="openCarPlayAudio('radio')" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="ラジオ">
+                    <span class="material-symbols-filled text-base text-red-400">radio</span>
+                </button>
+                <button onclick="recalculateRoute()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="ルート再検索">
+                    <span class="material-symbols-filled text-base text-amber-400" >refresh</span>
+                </button>
+            </div>
+
+
+        </div>
+    </div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
