@@ -2824,6 +2824,32 @@ video {
             100% { left: 120%; }
         }
 
+        /* NEW: alternate 起動アニメーション styles, selectable in 設定 → 起動アニメーション.
+           "classic" needs no extra rules (it's the plain, unprefixed styling above). */
+        #boot-splash.boot-style-radial #boot-logo {
+            animation: bootLogoRadialIn 1.3s cubic-bezier(0.16, 1, 0.3, 1) 0.1s forwards;
+        }
+        #boot-splash.boot-style-radial #boot-emblem {
+            filter: drop-shadow(0 0 20px rgba(96, 165, 250, 0.65));
+        }
+        @keyframes bootLogoRadialIn {
+            0%   { opacity: 0; transform: scale(0.4); filter: blur(6px); }
+            55%  { opacity: 1; }
+            100% { opacity: 1; transform: scale(1); filter: blur(0); }
+        }
+        #boot-splash.boot-style-minimal #boot-logo {
+            animation: bootLogoMinimalIn 0.45s ease-out forwards;
+        }
+        @keyframes bootLogoMinimalIn {
+            0%   { opacity: 0; }
+            100% { opacity: 1; }
+        }
+        #boot-splash.boot-style-minimal .boot-sheen { display: none; }
+        #boot-splash.boot-style-minimal #boot-caution {
+            animation-duration: 0.4s;
+            animation-delay: 0.25s;
+        }
+
         /* NEW FEATURE: speed readout subtle live-update pulse */
         @keyframes speedTick {
             0% { transform: scale(1); }
