@@ -2727,6 +2727,22 @@ video {
             background: linear-gradient(180deg, #6fb6ec 0%, #9ed3f2 40%, #d7ecf3 75%, #eaf4e6 100%);
         }
 
+        /* NEW: ヘディングアップ表示 — the map itself rotates so the travel direction always
+           points "up", while the car icon (a separate DOM element, see #car-arrow-element)
+           stays fixed pointing up on screen. Oversized (150%/-25%) and centered so every
+           corner stays covered by real map content at any rotation angle, with overflow
+           hidden on the parent (#map-section) cropping it back down to the visible viewport.
+           An ID selector is used so this reliably wins over the "inset-0 w-full h-full"
+           Tailwind utility classes already on the element in index.html. */
+        #map {
+            top: -25%;
+            left: -25%;
+            width: 150%;
+            height: 150%;
+            transform-origin: 50% 50%;
+            transition: transform 0.35s linear;
+        }
+
         /* UI Animations */
         @keyframes fadeIn {
             from { opacity: 0; transform: scale(0.98); }
