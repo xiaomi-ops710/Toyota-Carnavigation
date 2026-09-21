@@ -196,7 +196,7 @@
                         </div>
 
                         <!-- Center Active Guidance Direction Tag -->
-                        <div id="top-route-banner" onclick="openJctListModal()" class="hidden shrink-0 flex items-center gap-2 bg-blue-950/90 border border-blue-500/70 px-4 py-0.5 rounded-full text-cyan-200 text-xs font-bold shadow-md max-w-[38%] sm:max-w-[42%] cursor-pointer hover:bg-blue-900/90">
+                        <div id="top-route-banner" class="hidden shrink-0 flex items-center gap-2 bg-blue-950/90 border border-blue-500/70 px-4 py-0.5 rounded-full text-cyan-200 text-xs font-bold shadow-md max-w-[38%] sm:max-w-[42%]">
                             <span class="material-symbols-filled text-amber-400 animate-bounce shrink-0" >turn_right</span>
                             <span id="route-type-badge" class="shrink-0 bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded font-black">AI推奨</span>
                             <span id="banner-next-turn" class="font-extrabold truncate">首都高速 都心環状線 方面</span>
@@ -351,7 +351,7 @@
                                 </div>
 
                                 <!-- THREE.JS / DYNAMIC 3D SCENE GRAPHICS CONTAINER -->
-                                <div id="jct-canvas-parent" class="flex-1 relative bg-slate-950 overflow-hidden flex items-center justify-center">
+                                <div id="jct-canvas-parent" class="jct-sky-gradient flex-1 relative overflow-hidden flex items-center justify-center">
                                     <!-- Canvas Wrapper -->
                                     <div id="three-jct-canvas-container" class="w-full h-full absolute inset-0 z-0"></div>
                                     
@@ -371,13 +371,31 @@
                                 </div>
                             </div>
 
+                            <!-- OVERLAY: NEW FEATURE — IC/JCT PASSING LIST ("ハイウェイモード")
+                                 Shown instead of the 3D junction view while cruising an expressway
+                                 well ahead of the next interchange; yields to the 3D view above
+                                 automatically once a maneuver is actually imminent. See
+                                 checkJunctionApproach() / computeUpcomingJunctions() in script.js. -->
+                            <div id="jct-list-panel" class="hidden absolute top-0 right-0 bottom-10 w-1/2 z-20 bg-slate-950/95 border-l-2 border-blue-500 shadow-2xl flex flex-col animate-fade-in">
+                                <div class="shrink-0 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-b border-blue-500/60 px-3 py-1.5 flex items-center justify-between">
+                                    <div class="flex items-center gap-1.5 text-cyan-300 text-[11px] font-bold">
+                                        <span class="material-symbols-filled text-sm">signpost</span> 案内中の分岐
+                                    </div>
+                                    <button onclick="toggleJctListManualHide()" class="text-slate-400 hover:text-white text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 border border-slate-600" title="非表示">
+                                        <span class="material-symbols-filled text-sm">close</span>
+                                    </button>
+                                </div>
+                                <div id="jct-list-items" class="flex-1 overflow-y-auto divide-y divide-slate-800/70"></div>
+                                <div id="jct-list-current-road" class="shrink-0 px-3 py-1.5 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-300 font-bold truncate">道なり</div>
+                            </div>
+
                             <!-- OVERLAY: Bottom Navigation Control Toolbar Buttons -->
                             <div class="absolute bottom-0 left-0 right-0 z-20 p-1 bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent flex justify-between gap-1 pointer-events-auto">
                                 <button onclick="zoomIn()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-white bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">詳細</button>
                                 <button id="btn-guidance-toggle" onclick="toggleGuidanceOff()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-slate-200 bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">
                                     <span id="label-guidance">≪Off</span>
                                 </button>
-                                <button onclick="openDestinationModal()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-cyan-300 bg-slate-900 border border-cyan-600/60 hover:bg-cyan-950 shadow">目的地</button>
+                                <button onclick="openDestinationCategoryMenu()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-cyan-300 bg-slate-900 border border-cyan-600/60 hover:bg-cyan-950 shadow">目的地</button>
                                 <button onclick="openDisplayChangeModal()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-white bg-slate-800/90 hover:bg-slate-700 border border-slate-700 shadow">表示変更</button>
                                 <button onclick="recalculateRoute()" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-amber-300 bg-slate-900 border border-amber-600/60 hover:bg-amber-950 shadow">再探索</button>
                                 <button onclick="getCurrentLocation(true)" class="navi-btn flex-1 py-1.5 rounded-lg text-xs font-extrabold text-emerald-400 bg-slate-900 border border-emerald-600/60 hover:bg-emerald-950 shadow">現在地</button>
