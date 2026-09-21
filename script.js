@@ -14,6 +14,8 @@
         let currentPos = [35.6762, 139.7650]; // Default: Tokyo Ginza
         let originPos = null;
         let destinationPos = null;
+        let currentDestinationName = '目的地'; // NEW: tracked for 地点登録 (save as favorite) etc.
+        let simAvgSpeedMps = 15; // NEW: route-average speed, used for the JCT/IC list's ETA estimates
         let currentDestName = '';
         let viaPoint = null;       // NEW FEATURE: optional single waypoint ("経由地")
         let viaPointName = '';
@@ -1564,16 +1566,18 @@
             return { favHtml, histHtml };
         }
 
-        function openDestinationModal() {
+        // NEW: this is now the "名称"/"住所" search screen (with the full search fields, AI route
+        // mode, favorites and history) — reached FROM the category front screen below, instead of
+        // being the first thing shown. presetQuery pre-fills the destination field (used by 住所).
+        function openDestinationSearchFields(presetQuery = '') {
             playBeep();
             const { favHtml, histHtml } = renderFavoritesAndHistory();
-            // NEW: now opened as a fullscreen modal (see openCustomModal's fullscreen option),
-            // so the layout is reorganized into two columns on wider screens instead of one long
-            // vertically-stacked column — search fields on the left, favorites/history/quick
-            // destinations on the right, both visible without scrolling past the fold.
             const body = `
                 <div class="sm:grid sm:grid-cols-[1.3fr_1fr] sm:gap-5 sm:items-start">
                     <div class="space-y-4">
+                        <button onclick="openDestinationModal()" class="text-[11px] text-slate-400 hover:text-white flex items-center gap-1 -mt-1">
+                            <span class="material-symbols-filled text-sm">arrow_back</span> カテゴリ選択に戻る
+                        </button>
                         <!-- M3 filled text fields: 出発地 / 経由地 / 目的地 -->
                         <div class="space-y-3">
                             <div class="flex items-center gap-2">
@@ -1612,7 +1616,7 @@
                                     <label class="block text-[11px] font-bold tracking-wide text-red-400 mb-1 ml-1">目的地</label>
                                     <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-red-400 transition">
                                         <span class="material-symbols-filled text-red-400 text-lg">location_on</span>
-                                        <input id="dest-input" type="text" placeholder="例: 東京タワー, 横浜赤レンガ倉庫" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
+                                        <input id="dest-input" type="text" placeholder="例: 東京タワー, 横浜赤レンガ倉庫" value="${presetQuery}" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
                                         <button onclick="searchLocation('dest')" class="w-11 h-11 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
                                             <span class="material-symbols-filled text-lg">search</span>
                                         </button>
@@ -1679,6 +1683,176 @@
             `;
             openCustomModal('目的地＆AI経路探索', body, { fullscreen: true });
         }
+
+        // NEW: genre (POI category) search screen — reuses the existing Overpass-based
+        // openNearbyPOI() with a wider set of categories, styled as a grid like the "ジャンル" entry
+        // on a real car nav's destination screen.
+        function openGenreSearchModal() {
+            playBeep();
+            const genres = [
+                { type: 'convenience', label: 'コンビニ', icon: 'storefront' },
+                { type: 'gas_station', label: 'ガソリンスタンド', icon: 'local_gas_station' },
+                { type: 'ev_charge', label: 'EV充電スポット', icon: 'ev_station' },
+                { type: 'parking', label: '駐車場', icon: 'local_parking' },
+                { type: 'restaurant', label: '飲食店', icon: 'restaurant' },
+                { type: 'cafe', label: 'カフェ', icon: 'local_cafe' },
+                { type: 'hospital', label: '病院', icon: 'local_hospital' },
+                { type: 'atm', label: 'ATM・銀行', icon: 'local_atm' },
+                { type: 'toilets', label: 'トイレ', icon: 'wc' }
+            ];
+            const body = `
+                <div class="grid grid-cols-3 gap-2.5">
+                    ${genres.map(g => `
+                        <button onclick="closeModal(); openNearbyPOI('${g.type}')" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-1.5">
+                            <span class="material-symbols-filled text-2xl text-cyan-400">${g.icon}</span>
+                            <span class="text-[10px] font-bold text-white text-center">${g.label}</span>
+                        </button>
+                    `).join('')}
+                </div>
+            `;
+            openCustomModal('ジャンルで探す', body);
+        }
+
+        let homeLocation = null; // NEW: { name, lat, lon } — session only
+        let settingHomeMode = false;
+
+        function openSetHomeModal() {
+            playBeep();
+            if (homeLocation) {
+                openCustomModal('自宅', `
+                    <div class="space-y-3">
+                        <div class="bg-slate-800 border border-slate-700 rounded-xl p-3">
+                            <div class="text-xs font-bold text-white">${homeLocation.name}</div>
+                        </div>
+                        <button onclick="closeModal(); setQuickDestination(homeLocation.name, homeLocation.lat, homeLocation.lon)" class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold">この場所までナビ開始</button>
+                        <button onclick="homeLocation=null; openSetHomeModal();" class="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-bold">自宅登録を解除</button>
+                    </div>
+                `);
+                return;
+            }
+            settingHomeMode = true;
+            openCustomModal('自宅登録', `
+                <div class="text-xs text-slate-400 mb-3">住所や場所の名前で検索して、自宅として登録する場所を選んでください。</div>
+                <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-emerald-400 transition mb-2">
+                    <span class="material-symbols-filled text-emerald-400 text-lg">home</span>
+                    <input id="home-search-input" type="text" placeholder="例: 東京都新宿区..." class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none" onkeydown="if(event.key==='Enter') searchHomeLocation()">
+                    <button onclick="searchHomeLocation()" class="w-11 h-11 shrink-0 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
+                        <span class="material-symbols-filled text-lg">search</span>
+                    </button>
+                </div>
+                <div id="home-search-results" class="space-y-2"></div>
+            `);
+        }
+
+        async function searchHomeLocation() {
+            const input = document.getElementById('home-search-input');
+            const query = (input && input.value || '').trim();
+            const resultsEl = document.getElementById('home-search-results');
+            if (!query || !resultsEl) return;
+            resultsEl.innerHTML = '<div class="text-xs text-slate-500 p-2">検索中...</div>';
+            try {
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&accept-language=ja`);
+                const results = await res.json();
+                if (!results.length) {
+                    resultsEl.innerHTML = '<div class="text-xs text-slate-500 p-2">見つかりませんでした。</div>';
+                    return;
+                }
+                resultsEl.innerHTML = results.map(r => `
+                    <button onclick='setHomeLocation(${JSON.stringify(r.display_name)}, ${r.lat}, ${r.lon})' class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left text-xs text-white">
+                        ${r.display_name}
+                    </button>
+                `).join('');
+            } catch (err) {
+                resultsEl.innerHTML = '<div class="text-xs text-red-400 p-2">検索に失敗しました。</div>';
+            }
+        }
+
+        function setHomeLocation(name, lat, lon) {
+            playBeep();
+            homeLocation = { name, lat: parseFloat(lat), lon: parseFloat(lon) };
+            settingHomeMode = false;
+            closeModal();
+            speakGuidance('自宅を登録しました。');
+        }
+
+        // NEW: category front screen — replaces what used to be the first (and only) destination
+        // screen, matching a real car nav's "目的地" entry menu: search categories at top, then
+        // 特別メモリ (quick-dial favorite slots) and 履歴/自宅登録 below.
+        function openDestinationModal() {
+            playBeep();
+            const categories = [
+                { label: 'ジャンル', icon: 'category', action: "openGenreSearchModal()" },
+                { label: '電話番号', icon: 'call', action: "openPhoneSearchModal()" },
+                { label: '住所', icon: 'home_pin', action: "openDestinationSearchFields()" },
+                { label: 'メモリ地点', icon: 'bookmark', action: "openMemoryPointsModal()" },
+                { label: '名称', icon: 'text_fields', action: "openDestinationSearchFields()" }
+            ];
+            const memorySlots = Array.from({ length: 5 }, (_, i) => favoriteDestinations[i] || null);
+
+            const body = `
+                <div class="space-y-5">
+                    <div class="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
+                        ${categories.map(c => `
+                            <button onclick="${c.action}" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-1.5">
+                                <span class="material-symbols-filled text-2xl text-cyan-400">${c.icon}</span>
+                                <span class="text-[10px] font-bold text-white">${c.label}</span>
+                            </button>
+                        `).join('')}
+                    </div>
+
+                    <div>
+                        <div class="text-[11px] font-bold text-slate-400 mb-2">特別メモリ</div>
+                        <div class="grid grid-cols-5 gap-2">
+                            ${memorySlots.map((s, i) => s
+            ? `<button onclick="setQuickDestination('${s.name.replace(/'/g, "\\'")}', ${s.lat}, ${s.lon})" class="aspect-square rounded-2xl bg-blue-900/60 border border-blue-500 flex flex-col items-center justify-center gap-0.5 p-1">
+                                    <span class="text-sm font-black text-white">${i + 1}</span>
+                                    <span class="text-[8px] text-blue-200 truncate max-w-full px-0.5">${s.name}</span>
+                                   </button>`
+            : `<button onclick="openDestinationSearchFields()" class="aspect-square rounded-2xl bg-slate-800/60 border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-600">
+                                    <span class="text-sm font-black">${i + 1}</span>
+                                   </button>`
+        ).join('')}
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <button onclick="openHistoryModal()" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center gap-2">
+                            <span class="material-symbols-filled text-xl text-slate-300">history</span>
+                            <span class="text-xs font-bold text-white">履歴</span>
+                        </button>
+                        <button onclick="openSetHomeModal()" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center gap-2">
+                            <span class="material-symbols-filled text-xl ${homeLocation ? 'text-amber-400' : 'text-slate-300'}">home</span>
+                            <span class="text-xs font-bold text-white truncate">${homeLocation ? homeLocation.name : '自宅登録'}</span>
+                        </button>
+                    </div>
+                </div>
+            `;
+            openCustomModal('目的地', body);
+        }
+
+        function openPhoneSearchModal() {
+            playBeep();
+            openCustomModal('電話番号で探す', `
+                <div class="text-xs text-slate-400 leading-relaxed p-1">
+                    このアプリでは電話番号データベースを利用できないため、電話番号での検索は未対応です。<br><br>
+                    お手数ですが「名称」または「住所」から検索してください。
+                </div>
+                <button onclick="openDestinationSearchFields()" class="w-full mt-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold">名称で検索する</button>
+            `);
+        }
+
+        function openMemoryPointsModal() {
+            playBeep();
+            const { favHtml } = renderFavoritesAndHistory();
+            openCustomModal('メモリ地点', `<div class="space-y-1.5">${favHtml}</div>`);
+        }
+
+        function openHistoryModal() {
+            playBeep();
+            const { histHtml } = renderFavoritesAndHistory();
+            openCustomModal('履歴', `<div class="space-y-1.5">${histHtml}</div>`);
+        }
+
 
         let selectedRouteMode = 'AI推奨';
         function selectRouteType(mode, btn) {
@@ -1851,6 +2025,8 @@
                 // between them instead of a straight chord.
                 simCoords = densifyRouteCoords(route.geometry.coordinates.map(c => [c[1], c[0]]));
                 simSteps = route.legs.flatMap(leg => leg.steps); // flatten all legs (origin→via, via→dest)
+                currentDestinationName = destName;
+                simAvgSpeedMps = route.duration > 0 ? (route.distance / route.duration) : 15;
                 buildRouteDistanceTables();
                 simTraveledM = 0;
                 simCurrentSpeedMps = 0;
@@ -2758,9 +2934,18 @@
                 convenience: 'shop=convenience',
                 gas_station: 'amenity=fuel',
                 ev_charge: 'amenity=charging_station',
-                parking: 'amenity=parking'
+                parking: 'amenity=parking',
+                restaurant: 'amenity=restaurant',
+                cafe: 'amenity=cafe',
+                hospital: 'amenity=hospital',
+                atm: 'amenity=atm',
+                toilets: 'amenity=toilets'
             };
-            const labelMap = { convenience: '周辺コンビニ', gas_station: 'ガソリンスタンド', ev_charge: 'EV充電スポット', parking: '周辺駐車場' };
+            const labelMap = {
+                convenience: '周辺コンビニ', gas_station: 'ガソリンスタンド', ev_charge: 'EV充電スポット',
+                parking: '周辺駐車場', restaurant: '周辺飲食店', cafe: '周辺カフェ',
+                hospital: '周辺病院', atm: 'ATM・銀行', toilets: 'トイレ'
+            };
             const label = labelMap[type] || '周辺スポット';
             const tagQuery = OVERPASS_TAGS[type] || OVERPASS_TAGS.convenience;
             const [lat, lon] = currentPos;
@@ -2803,8 +2988,158 @@
 
         function recalculateRoute() {
             playBeep();
-            if (destinationPos) calculateAndDrawRoute();
+            if (destinationPos) calculateAndDrawRoute(currentDestinationName);
             else openDestinationModal();
+        }
+
+        /* ====================================================================
+           JCT / IC 通過リスト — 純正ナビの「この先の分岐(IC/JCT)一覧」画面を再現。
+           simSteps (OSRM step list) から、IC/JCT/ラウンドアバウト/到着など「意味のある」
+           分岐だけを抜き出し、現在地からの距離とおおよそのETAを添えて表示する。
+           ==================================================================== */
+        function getUpcomingJunctionEvents(limit = 8) {
+            if (!simSteps.length || !simStepCumDistM.length) return [];
+            let idx = 0;
+            while (idx < simStepCumDistM.length - 2 && simStepCumDistM[idx + 1] <= simTraveledM) idx++;
+
+            const events = [];
+            for (let i = idx; i < simSteps.length; i++) {
+                const step = simSteps[i];
+                const name = step.name || '';
+                const type = step.maneuver && step.maneuver.type;
+                const isIC = /IC|インターチェンジ/.test(name);
+                const isJCT = /JCT|ジャンクション/.test(name);
+                const isNotable = isIC || isJCT || ['on ramp', 'off ramp', 'merge', 'fork', 'roundabout', 'rotary'].includes(type) || type === 'arrive';
+                if (!isNotable) continue;
+
+                const distM = Math.max(0, simStepCumDistM[i] - simTraveledM);
+                const etaSec = distM / Math.max(1, simAvgSpeedMps);
+                events.push({
+                    tag: type === 'arrive' ? '目的地' : (isIC ? 'IC' : (isJCT ? 'JCT' : '分岐')),
+                    name: name || (type === 'arrive' ? currentDestinationName : '名称不明の分岐'),
+                    distM,
+                    eta: new Date(Date.now() + etaSec * 1000)
+                });
+                if (events.length >= limit) break;
+            }
+            return events;
+        }
+
+        function formatEtaTime(d) {
+            return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        }
+
+        function formatDistM(distM) {
+            return distM < 1000 ? Math.round(distM) + 'm' : (distM / 1000).toFixed(1) + 'km';
+        }
+
+        function openJctListModal() {
+            playBeep();
+            if (!simSteps.length) {
+                speakGuidance('現在、案内中の経路がありません。');
+                return;
+            }
+            const events = getUpcomingJunctionEvents();
+            const totalRemainM = Math.max(0, (simCumDistM[simCumDistM.length - 1] || 0) - simTraveledM);
+            const etaTotal = new Date(Date.now() + (totalRemainM / Math.max(1, simAvgSpeedMps)) * 1000);
+            const currentRoadName = (simSteps[Math.max(0, simSteps.findIndex((_, i) => simStepCumDistM[i + 1] > simTraveledM))] || {}).name || currentDestinationName;
+
+            const listHtml = events.length
+                ? events.map(e => `
+                    <div class="border border-blue-600 bg-blue-950/50 rounded-lg overflow-hidden flex items-stretch">
+                        <div class="w-14 shrink-0 flex flex-col items-center justify-center gap-0.5 bg-blue-900/70 border-r border-blue-600 py-2">
+                            <span class="text-[9px] font-black text-emerald-300 bg-emerald-950 border border-emerald-500 rounded px-1">${e.tag}</span>
+                        </div>
+                        <div class="flex-1 min-w-0 px-3 py-2 flex items-center justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="text-sm font-black text-white truncate">${e.name}</div>
+                                <div class="text-[11px] text-cyan-300 digital-font">${formatEtaTime(e.eta)}</div>
+                            </div>
+                            <div class="text-lg font-black text-white digital-font shrink-0">${formatDistM(e.distM)}</div>
+                        </div>
+                    </div>
+                `).join('')
+                : '<div class="text-xs text-slate-500 p-3 text-center">この先、IC/JCT等の目立った分岐はありません。</div>';
+
+            const nextEvent = events[0];
+            const body = `
+                <div class="flex flex-col h-full">
+                    <div class="flex-1 min-h-0 flex gap-3 overflow-hidden">
+                        <!-- Left info box: compass / next-distance / traffic / ETA (純正ナビ風) -->
+                        <div class="w-28 shrink-0 space-y-2 overflow-y-auto">
+                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2 flex flex-col items-center gap-1">
+                                <span id="jct-modal-compass" class="material-symbols-filled text-2xl text-white" style="transform: rotate(${currentHeading}deg)">navigation</span>
+                                <div class="text-[10px] text-slate-400">GPS</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2 text-center">
+                                <div class="text-base font-black text-white digital-font">${nextEvent ? formatDistM(nextEvent.distM) : '--'}</div>
+                                <div class="text-[9px] text-slate-500">次の分岐まで</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2">
+                                <div class="text-[9px] text-slate-500 mb-0.5">交通情報</div>
+                                <div class="text-[10px] text-emerald-400 font-bold">順調</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2 text-center">
+                                <div class="text-[9px] text-slate-500">到着予想</div>
+                                <div class="text-base font-black text-cyan-300 digital-font">${formatEtaTime(etaTotal)}</div>
+                                <div class="text-[9px] text-slate-500 mt-1">${formatDistM(totalRemainM)}</div>
+                            </div>
+                        </div>
+
+                        <!-- Right: upcoming IC/JCT list -->
+                        <div class="flex-1 min-w-0 space-y-2 overflow-y-auto pr-1">
+                            ${listHtml}
+                        </div>
+                    </div>
+
+                    <!-- Bottom road-name banner -->
+                    <div class="shrink-0 mt-3 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center text-sm font-bold text-white truncate">
+                        ${currentRoadName}
+                    </div>
+
+                    <!-- Bottom function button row (純正ナビ下部ボタン列を再現) -->
+                    <div class="shrink-0 mt-2 grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+                        <button onclick="openJctDetailModal()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">詳細</button>
+                        <button onclick="closeModal()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">Off</button>
+                        <button onclick="closeModal(); openDestinationModal();" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">目的地</button>
+                        <button onclick="cycleDriveMode()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">表示変更</button>
+                        <button onclick="closeModal(); recalculateRoute();" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">再探索</button>
+                        <button onclick="jctRegisterCurrentDestination()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">地点登録</button>
+                        <button onclick="closeModal(); map.setZoom(Math.max(3, map.getZoom() - 3));" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">広域</button>
+                    </div>
+                </div>
+            `;
+            openCustomModal('この先の分岐 (JCT/IC)', body, { fullscreen: true });
+        }
+
+        // NEW: "詳細" — full step-by-step list (not just IC/JCT), for anyone who wants the whole
+        // turn-by-turn rather than just the highlighted highway events.
+        function openJctDetailModal() {
+            playBeep();
+            let idx = 0;
+            while (idx < simStepCumDistM.length - 2 && simStepCumDistM[idx + 1] <= simTraveledM) idx++;
+            const rows = simSteps.slice(idx).map((step, i) => {
+                const realIdx = idx + i;
+                const distM = Math.max(0, simStepCumDistM[realIdx] - simTraveledM);
+                return `
+                    <div class="flex items-center justify-between gap-2 border-b border-slate-800 py-2 px-1">
+                        <div class="text-xs font-bold text-white truncate">${step.name || maneuverToText(step)}</div>
+                        <div class="text-[11px] text-cyan-300 digital-font shrink-0">${formatDistM(distM)}</div>
+                    </div>
+                `;
+            }).join('') || '<div class="text-xs text-slate-500 p-3">案内中の経路がありません。</div>';
+            openCustomModal('詳細ルート案内', `<div class="max-h-full overflow-y-auto">${rows}</div>`);
+        }
+
+        function jctRegisterCurrentDestination() {
+            playBeep();
+            if (!destinationPos) {
+                speakGuidance('目的地が設定されていません。');
+                return;
+            }
+            addFavorite(currentDestinationName, destinationPos[0], destinationPos[1]);
+            closeModal();
+            speakGuidance(`${currentDestinationName}をお気に入りに登録しました。`);
         }
 
         function toggleSplitScreen() {
