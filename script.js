@@ -4,7 +4,7 @@
         // GitHub Pages版: ここに自分のGemini APIキーを直接貼り付けてください
         // (取得先: https://aistudio.google.com/app/apikey)。
         // ⚠️ 静的サイトなので、このキーは誰でもブラウザの「ページのソースを表示」で読めてしまいます。
-        const GEMINI_API_KEY = 'AQ.Ab8RN6LyQMJGHECNs6t2JwNpGqmd4jW9Yvr5GHS-M9ViT31xUg';
+        const GEMINI_API_KEY = 'ここにGemini APIキーを貼り付け';
         // NOTE: the boot-splash failsafe (uncaught-error handler, auto-hide timer, and the
         // manual "tap to continue" skip-button timer) now lives in a tiny dependency-free
         // <script> at the very top of index.html's <head>, ahead of every external resource,
@@ -22,7 +22,7 @@
         let guidanceOff = false;
         let splitScreenOpen = true;
         let currentAudioSource = 'applemusic';
-        let currentRadioStationLabel = 'Groove Salad'; // NEW: SomaFM radio state
+        let currentRadioStationLabel = '未選択'; // NEW: radio state (Radio-Browser search based)
 
         // NEW FEATURE & UPDATED STATES
         let driveMode = 'NORMAL'; 
@@ -85,7 +85,6 @@
         let animFrameId = null;
         let simIndex = 0;
 
-        // ---- Geo helpers for the distance-based driving simulation ----
         function haversineM(lat1, lon1, lat2, lon2) {
             const R = 6371000;
             const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -94,6 +93,40 @@
                 Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
             return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         }
+
+        // NEW: Catmull-Rom spline through 4 control points (p1→p2 is the segment being
+        // subdivided; p0/p3 are the neighbors, used so the curve bends naturally into and out of
+        // the segment instead of just being a straight line). Passes exactly through every real
+        // point OSRM gave us — it only adds curvature *between* them, never moves them.
+        function catmullRomPoint(p0, p1, p2, p3, t) {
+            const t2 = t * t, t3 = t2 * t;
+            const lat = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t +
+                (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
+            const lon = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t +
+                (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
+            return [lat, lon];
+        }
+
+        function densifyRouteCoords(coords, maxGapM = 12) {
+            if (coords.length < 3) return coords;
+            const out = [coords[0]];
+            for (let i = 0; i < coords.length - 1; i++) {
+                const p0 = coords[i - 1] || coords[i];
+                const p1 = coords[i];
+                const p2 = coords[i + 1];
+                const p3 = coords[i + 2] || coords[i + 1];
+                const gap = haversineM(p1[0], p1[1], p2[0], p2[1]);
+                const steps = Math.min(20, Math.max(1, Math.ceil(gap / maxGapM)));
+                for (let s = 1; s <= steps; s++) {
+                    out.push(s === steps ? p2 : catmullRomPoint(p0, p1, p2, p3, s / steps));
+                }
+            }
+            return out;
+        }
+
+        // ---- Geo helpers for the distance-based driving simulation ----
 
         function buildRouteDistanceTables() {
             simCumDistM = [0];
@@ -1041,7 +1074,7 @@
             const trackText = document.getElementById('top-audio-track');
             const icon = document.getElementById('mini-audio-icon');
             const urlDisplay = document.getElementById('player-current-url');
-            const urlBar = urlDisplay ? urlDisplay.closest('.flex-1') : null;
+            const urlBar = document.getElementById('audio-address-bar');
 
             // Reset App Button Styles
             ['applemusic', 'radio', 'local'].forEach(s => {
@@ -1059,7 +1092,7 @@
             if (radioPanel) radioPanel.classList.toggle('hidden', source !== 'radio');
             if (localPanel) localPanel.classList.toggle('hidden', source !== 'local');
             hideAudioEmbedFallback();
-            if (urlBar) urlBar.style.visibility = (source === 'applemusic') ? '' : 'hidden';
+            if (urlBar) urlBar.classList.toggle('hidden', source !== 'applemusic');
 
             // Stop whichever <audio> element isn't the active source, so switching apps doesn't
             // leave two things playing at once.
@@ -1111,37 +1144,71 @@
         }
 
         /* ====================================================================
-           RADIO (SomaFM 直接ストリーム再生) — <audio>ベース、iframe不使用
+           RADIO — <audio>ベース、iframe不使用。特定の1局/1プロバイダに固定せず、
+           Radio-Browser(世界中のネットラジオ局を集めた無料の公開ディレクトリ)を検索して
+           再生する。あるプロバイダの配信がブロックされても、別の局を探して切り替えられる。
            ==================================================================== */
-        const RADIO_STATIONS = {
-            groovesalad: { url: 'https://ice.somafm.com/groovesalad', label: 'Groove Salad' },
-            indiepop: { url: 'https://ice.somafm.com/indiepop', label: 'Indie Pop Rocks' },
-            dronezone: { url: 'https://ice.somafm.com/dronezone', label: 'Drone Zone' }
-        };
+        const RADIO_BROWSER_API = 'https://de1.api.radio-browser.info';
 
-        function selectRadioStation(key, label, btn) {
+        function quickRadioSearch(query) {
+            const input = document.getElementById('radio-search-input');
+            if (input) input.value = query;
+            searchRadioStations();
+        }
+
+        async function searchRadioStations() {
             playBeep();
-            const station = RADIO_STATIONS[key];
-            if (!station) return;
-            currentRadioStationLabel = label;
+            const input = document.getElementById('radio-search-input');
+            const query = (input && input.value || '').trim();
+            const resultsEl = document.getElementById('radio-search-results');
+            if (!query || !resultsEl) return;
+            resultsEl.innerHTML = '<div class="text-xs text-slate-500 p-2 flex items-center gap-2"><span class="material-symbols-filled fa-spin text-sm">progress_activity</span> 検索中...</div>';
+            try {
+                const url = `${RADIO_BROWSER_API}/json/stations/search?name=${encodeURIComponent(query)}&limit=10&hidebroken=true&order=clickcount&reverse=true`;
+                const res = await fetch(url);
+                const stations = await res.json();
+                if (!Array.isArray(stations) || stations.length === 0) {
+                    resultsEl.innerHTML = '<div class="text-xs text-slate-500 p-2 text-center">見つかりませんでした。別のキーワードをお試しください。</div>';
+                    return;
+                }
+                resultsEl.innerHTML = stations.map(s => `
+                    <button onclick='playRadioStation(${JSON.stringify(s.url_resolved || s.url)}, ${JSON.stringify(s.name)})' class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left flex items-center gap-2.5">
+                        <span class="material-symbols-filled text-red-400 text-lg shrink-0">radio</span>
+                        <div class="min-w-0 flex-1">
+                            <div class="text-xs font-bold text-white truncate">${s.name || '(無題の局)'}</div>
+                            <div class="text-[9px] text-slate-400 truncate">${[s.countrycode, s.bitrate ? s.bitrate + 'kbps' : '', s.codec].filter(Boolean).join(' ・ ')}</div>
+                        </div>
+                    </button>
+                `).join('');
+            } catch (err) {
+                resultsEl.innerHTML = '<div class="text-xs text-red-400 p-2 text-center">検索に失敗しました。通信環境をご確認ください。</div>';
+            }
+        }
 
-            document.querySelectorAll('.radio-station-btn').forEach(b => {
-                b.className = 'radio-station-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold';
-            });
-            if (btn) btn.className = 'radio-station-btn active p-2 rounded-xl bg-red-950/80 border border-red-500 text-white text-[10px] font-bold';
-
+        function playRadioStation(url, name) {
+            playBeep();
+            if (!url) { speakGuidance('この局は再生用のURLがありません。'); return; }
+            currentRadioStationLabel = name;
             const nameEl = document.getElementById('radio-station-name');
-            if (nameEl) nameEl.innerText = label;
+            if (nameEl) nameEl.innerText = name;
             const trackText = document.getElementById('top-audio-track');
-            if (trackText && currentAudioSource === 'radio') trackText.innerText = 'ラジオ - ' + label;
+            if (trackText && currentAudioSource === 'radio') trackText.innerText = 'ラジオ - ' + name;
 
             const radioEl = document.getElementById('radio-audio-el');
             if (!radioEl) return;
-            const wasPlaying = !radioEl.paused;
             radioEl.pause();
-            radioEl.src = station.url;
-            if (wasPlaying) radioEl.play().catch(() => {});
+            radioEl.src = url;
+            radioEl.play().catch(() => {
+                speakGuidance('この局は再生できませんでした。別の局をお試しください。');
+            });
             updateRadioPlayButtonIcon();
+        }
+
+        function playManualRadioUrl() {
+            const input = document.getElementById('radio-manual-url');
+            const url = (input && input.value || '').trim();
+            if (!url) return;
+            playRadioStation(url, 'カスタム局');
         }
 
         function toggleRadioPlayback() {
@@ -1149,12 +1216,12 @@
             const radioEl = document.getElementById('radio-audio-el');
             if (!radioEl) return;
             if (!radioEl.src) {
-                const station = RADIO_STATIONS.groovesalad;
-                radioEl.src = station.url;
+                speakGuidance('まず局を検索して選んでください。');
+                return;
             }
             if (radioEl.paused) {
                 radioEl.play().catch(() => {
-                    speakGuidance('ラジオの再生に失敗しました。通信環境をご確認ください。');
+                    speakGuidance('ラジオの再生に失敗しました。別の局をお試しください。');
                 });
             } else {
                 radioEl.pause();
@@ -1775,7 +1842,14 @@
                 }
 
                 const route = data.routes[0];
-                simCoords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+                // NEW: OSRM's raw geometry points can be tens of meters apart on tight curves
+                // (highway interchange loops, curved intersections) — driving in a straight line
+                // between two such points visually cuts across the inside of the curve instead of
+                // following the road, which is the "car drives off the road" symptom. This inserts
+                // extra points along a Catmull-Rom spline that passes through every real
+                // (road-snapped) point OSRM gave us, so the path still hugs the actual curve
+                // between them instead of a straight chord.
+                simCoords = densifyRouteCoords(route.geometry.coordinates.map(c => [c[1], c[0]]));
                 simSteps = route.legs.flatMap(leg => leg.steps); // flatten all legs (origin→via, via→dest)
                 buildRouteDistanceTables();
                 simTraveledM = 0;
@@ -1858,9 +1932,21 @@
                 currentHeading = getHeadingAtDistance(simTraveledM);
 
                 // Rotate Car Icon Arrow
+                // FIXED: previously this always rotated the car icon to match the real travel
+                // heading, regardless of headingMode — so tapping the compass button changed the
+                // little corner arrow but never actually changed the car icon itself. Now
+                // "ノースアップ" really does keep the car marker fixed pointing up/north no matter
+                // how the road turns, and "ヘディングアップ" rotates it to match travel direction.
                 const carElem = document.getElementById('car-arrow-element');
                 if (carElem) {
-                    carElem.style.transform = `rotate(${currentHeading}deg)`;
+                    carElem.style.transform = (headingMode === 'north') ? 'rotate(0deg)' : `rotate(${currentHeading}deg)`;
+                }
+                // The small corner compass arrow, in north-up mode, now continuously shows the
+                // vehicle's real travel direction relative to true north (like a real compass
+                // needle) instead of being frozen at whatever it showed when the button was tapped.
+                if (headingMode === 'north') {
+                    const compassArrow = document.getElementById('compass-arrow');
+                    if (compassArrow) compassArrow.style.transform = `rotate(${currentHeading}deg)`;
                 }
 
                 carMarker.setLatLng(currentPos);
@@ -2771,3 +2857,12 @@
         ['play', 'pause', 'ended'].forEach(evt => localEl.addEventListener(evt, updateLocalPlayButtonIcon));
     }
 })();
+
+// NEW: register the service worker so the browser recognizes this as an installable PWA
+// (Chrome/Android's "install app" prompt requires one; iOS's Add-to-Home-Screen doesn't need it
+// but isn't hurt by it).
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+}

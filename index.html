@@ -6,6 +6,27 @@
     <base target="_top">
     <title>Toyota T-Connect 12.3-inch HD Display Audio & Navigation</title>
 
+    <!-- NEW: PWA support — lets the app be "installed" (Add to Home Screen / desktop install)
+         with its own icon and standalone window instead of just being a bookmarked tab. -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0a0e17">
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="T-Connect Navi">
+
+    <!-- FIXED: this project used to ship a hand-maintained, precompiled static Tailwind CSS file
+         (style.css) — built once by scanning the HTML/JS that existed at the time. Any Tailwind
+         utility class added later (like the ones used for the radio/local-MP3 panels and the
+         destination-search 2-column layout) has no matching rule in that file and silently does
+         nothing, which is exactly what broke those screens. Now that this runs on plain GitHub
+         Pages (no GAS iframe sandbox restrictions), Tailwind's own CDN build (which compiles
+         whatever classes are actually used, live) is loaded alongside style.css: anything already
+         styled by style.css is untouched, and anything missing from it gets generated correctly
+         here — so this class of bug can't recur. -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
     <!-- NEW: this tiny script is placed FIRST, before anything else — including every external
          resource below — specifically so it can NEVER be delayed by them. Per the HTML spec, a
          pending external stylesheet can hold up execution of scripts that come AFTER it in the
@@ -146,52 +167,59 @@
                 <div class="flex-1 h-full flex flex-col relative overflow-hidden">
                     
                     <!-- TOP STATUS BAR -->
-                    <div class="h-9 bg-slate-950/90 backdrop-blur border-b border-slate-800/80 px-4 flex items-center justify-between text-xs z-20">
-                        <div class="flex items-center gap-3">
-                            <span id="top-clock" class="digital-font text-lg font-bold text-white tracking-wider">17:42</span>
-                            <button onclick="toggleWeatherOverlay()" class="text-slate-300 hover:text-white font-bold text-xs flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded-full">
+                    <!-- FIXED: this bar used to be a strict fixed h-9 with justify-between and no
+                         overflow handling — with several badges active at once (audio + route
+                         guidance + 3D/safety/parking/CarPlay/signal, etc.) there wasn't enough
+                         horizontal room and content got visually crushed/clipped. The left and
+                         right badge groups now scroll horizontally instead of being force-fit, and
+                         the center guidance banner is protected (shrink-0) so it's never the thing
+                         that gets squeezed. -->
+                    <div class="min-h-9 bg-slate-950/90 backdrop-blur border-b border-slate-800/80 px-2 sm:px-4 py-1 flex items-center gap-2 text-xs z-20">
+                        <div class="flex items-center gap-2 sm:gap-3 overflow-x-auto flex-nowrap min-w-0 shrink" style="scrollbar-width: thin;">
+                            <span id="top-clock" class="digital-font text-lg font-bold text-white tracking-wider shrink-0">17:42</span>
+                            <button onclick="toggleWeatherOverlay()" class="shrink-0 text-slate-300 hover:text-white font-bold text-xs flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded-full">
                                 <span class="material-symbols-filled text-cyan-400"  id="weather-icon">partly_cloudy_day</span>
                                 <span id="ext-temp" class="text-white digital-font">22</span>°C
                                 <span id="weather-desc" class="text-[10px] text-slate-400">晴れ</span>
                             </button>
                             
                             <!-- Drive Mode Badge -->
-                            <button onclick="cycleDriveMode()" id="drive-mode-badge" class="bg-blue-900/80 border border-blue-500 text-cyan-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125">
+                            <button onclick="cycleDriveMode()" id="drive-mode-badge" class="shrink-0 bg-blue-900/80 border border-blue-500 text-cyan-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125">
                                 MODE: NORMAL
                             </button>
 
                             <!-- Audio Playing Mini Banner -->
-                            <div onclick="switchDockTab('audio')" class="cursor-pointer flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 px-3 py-0.5 rounded-full text-[11px]">
+                            <div onclick="switchDockTab('audio')" class="shrink-0 cursor-pointer flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 px-3 py-0.5 rounded-full text-[11px]">
                                 <span id="mini-audio-icon" class="fa-brands fa-apple text-pink-400"></span>
                                 <span id="top-audio-track" class="text-slate-200 font-bold truncate max-w-[150px]">Apple Music - 再生中</span>
                             </div>
                         </div>
 
                         <!-- Center Active Guidance Direction Tag -->
-                        <div id="top-route-banner" class="hidden flex items-center gap-2 bg-blue-950/90 border border-blue-500/70 px-4 py-0.5 rounded-full text-cyan-200 text-xs font-bold shadow-md">
-                            <span class="material-symbols-filled text-amber-400 animate-bounce" >turn_right</span>
-                            <span id="route-type-badge" class="bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded font-black">AI推奨</span>
-                            <span id="banner-next-turn" class="font-extrabold">首都高速 都心環状線 方面</span>
+                        <div id="top-route-banner" class="hidden shrink-0 flex items-center gap-2 bg-blue-950/90 border border-blue-500/70 px-4 py-0.5 rounded-full text-cyan-200 text-xs font-bold shadow-md max-w-[38%] sm:max-w-[42%]">
+                            <span class="material-symbols-filled text-amber-400 animate-bounce shrink-0" >turn_right</span>
+                            <span id="route-type-badge" class="shrink-0 bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded font-black">AI推奨</span>
+                            <span id="banner-next-turn" class="font-extrabold truncate">首都高速 都心環状線 方面</span>
                         </div>
 
                         <!-- Right Wireless / Safety Badges -->
-                        <div class="flex items-center gap-2.5 text-slate-400 text-xs">
-                            <button id="btn-sim-speed" onclick="cycleSimSpeed()" class="hidden bg-purple-900/80 hover:bg-purple-800 border border-purple-500 text-purple-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                        <div class="flex items-center gap-2 sm:gap-2.5 text-slate-400 text-xs overflow-x-auto flex-nowrap min-w-0 shrink justify-end" style="scrollbar-width: thin;">
+                            <button id="btn-sim-speed" onclick="cycleSimSpeed()" class="hidden shrink-0 bg-purple-900/80 hover:bg-purple-800 border border-purple-500 text-purple-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
                                 <span class="material-symbols-filled mr-1" >speed</span><span id="speed-text">1x 速度</span>
                             </button>
-                            <button onclick="toggle3DJunctionEnable()" id="btn-3d-jct-toggle" class="bg-indigo-900/80 hover:bg-indigo-800 border border-indigo-500 text-indigo-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                            <button onclick="toggle3DJunctionEnable()" id="btn-3d-jct-toggle" class="shrink-0 bg-indigo-900/80 hover:bg-indigo-800 border border-indigo-500 text-indigo-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
                                 <span class="material-symbols-filled mr-1" >view_in_ar</span><span id="label-3d-toggle">3D案内: ON</span>
                             </button>
-                            <button onclick="toggleSafetyAssist()" id="btn-safety-toggle" class="bg-red-900/80 hover:bg-red-800 border border-red-500 text-red-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                            <button onclick="toggleSafetyAssist()" id="btn-safety-toggle" class="shrink-0 bg-red-900/80 hover:bg-red-800 border border-red-500 text-red-200 text-[10px] font-black px-2 py-0.5 rounded shadow">
                                 <span class="material-symbols-filled mr-1" >shield</span><span id="label-safety-toggle">安全支援: ON</span>
                             </button>
-                            <button onclick="openAdvancedParkModal()" class="bg-cyan-900/80 hover:bg-cyan-800 border border-cyan-500 text-cyan-200 text-[9px] font-black px-2 py-0.5 rounded shadow">
+                            <button onclick="openAdvancedParkModal()" class="shrink-0 bg-cyan-900/80 hover:bg-cyan-800 border border-cyan-500 text-cyan-200 text-[9px] font-black px-2 py-0.5 rounded shadow">
                                 <span class="material-symbols-filled mr-1" >local_parking</span>360° Park
                             </button>
-                            <span class="bg-emerald-600/90 text-white text-[9px] font-black px-2 py-0.5 rounded shadow">CarPlay</span>
-                            <span class="material-symbols-filled text-emerald-400"  title="Toyota Safety Sense">shield</span>
-                            <i class="fa-brands fa-bluetooth-b text-blue-400"></i>
-                            <span class="material-symbols-filled text-emerald-400" >signal_cellular_alt</span>
+                            <span class="shrink-0 bg-emerald-600/90 text-white text-[9px] font-black px-2 py-0.5 rounded shadow">CarPlay</span>
+                            <span class="shrink-0 material-symbols-filled text-emerald-400"  title="Toyota Safety Sense">shield</span>
+                            <i class="shrink-0 fa-brands fa-bluetooth-b text-blue-400"></i>
+                            <span class="shrink-0 material-symbols-filled text-emerald-400" >signal_cellular_alt</span>
                         </div>
                     </div>
 
@@ -533,8 +561,8 @@
 
                         <!-- Right Audio Player Browser Display -->
                         <div class="flex-1 bg-black flex flex-col p-1 relative">
-                            <!-- Address / Navigation Bar for Web Player -->
-                            <div class="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex items-center gap-2 text-xs">
+                            <!-- Address / Navigation Bar for Web Player (Apple Music only) -->
+                            <div id="audio-address-bar" class="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex items-center gap-2 text-xs">
                                 <button onclick="refreshAudioIframe()" class="p-1 text-slate-400 hover:text-white" title="更新">
                                     <span class="material-symbols-filled" >refresh</span>
                                 </button>
@@ -570,20 +598,42 @@
                                      A direct audio stream can't be blocked by X-Frame-Options/CSP the way a
                                      framed page can, and SomaFM's streams explicitly allow cross-origin
                                      playback, so this is far more reliable than any iframe-embedded player. -->
-                                <div id="radio-player-panel" class="hidden absolute inset-0 bg-slate-950 flex flex-col items-center justify-center text-center p-6 gap-4">
-                                    <span class="material-symbols-filled text-6xl text-red-400 pulse-glow">radio</span>
-                                    <div>
-                                        <div id="radio-station-name" class="text-base font-black text-white">Groove Salad</div>
-                                        <div class="text-xs text-slate-400 mt-1">SomaFM ネットラジオ (直接ストリーム再生)</div>
+                                <div id="radio-player-panel" class="hidden absolute inset-0 bg-slate-950 flex flex-col text-center p-4 gap-3 overflow-y-auto">
+                                    <div class="shrink-0 flex flex-col items-center gap-2 pt-2">
+                                        <span class="material-symbols-filled text-5xl text-red-400 pulse-glow">radio</span>
+                                        <div id="radio-station-name" class="text-sm font-black text-white truncate max-w-full px-4">局を検索してください</div>
+                                        <audio id="radio-audio-el" preload="none"></audio>
+                                        <button onclick="toggleRadioPlayback()" id="radio-play-btn" class="w-14 h-14 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow-xl">
+                                            <span class="material-symbols-filled text-2xl">play_arrow</span>
+                                        </button>
                                     </div>
-                                    <audio id="radio-audio-el" preload="none"></audio>
-                                    <button onclick="toggleRadioPlayback()" id="radio-play-btn" class="w-16 h-16 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow-xl">
-                                        <span class="material-symbols-filled text-3xl">play_arrow</span>
-                                    </button>
-                                    <div class="grid grid-cols-3 gap-2 w-full max-w-xs">
-                                        <button onclick="selectRadioStation('groovesalad', 'Groove Salad', this)" class="radio-station-btn active p-2 rounded-xl bg-red-950/80 border border-red-500 text-white text-[10px] font-bold">Groove Salad</button>
-                                        <button onclick="selectRadioStation('indiepop', 'Indie Pop Rocks', this)" class="radio-station-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold">Indie Pop</button>
-                                        <button onclick="selectRadioStation('dronezone', 'Drone Zone', this)" class="radio-station-btn p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold">Drone Zone</button>
+
+                                    <!-- NEW: search across thousands of real internet-radio stations (Radio-Browser,
+                                         a free community directory) instead of hardcoding one station/provider that
+                                         can individually go down or get blocked. -->
+                                    <div class="shrink-0 flex items-center gap-1.5 px-1">
+                                        <input id="radio-search-input" type="text" placeholder="局名で検索 (例: NHK, J-WAVE, Jazz)" class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-red-400" onkeydown="if(event.key==='Enter') searchRadioStations()">
+                                        <button onclick="searchRadioStations()" class="w-10 h-10 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white">
+                                            <span class="material-symbols-filled text-lg">search</span>
+                                        </button>
+                                    </div>
+                                    <div class="shrink-0 flex items-center gap-1.5 px-1 flex-wrap justify-center">
+                                        <button onclick="quickRadioSearch('NHK')" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-slate-300">NHK</button>
+                                        <button onclick="quickRadioSearch('J-WAVE')" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-slate-300">J-WAVE</button>
+                                        <button onclick="quickRadioSearch('TOKYO FM')" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-slate-300">TOKYO FM</button>
+                                        <button onclick="quickRadioSearch('Jazz')" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-slate-300">Jazz</button>
+                                        <button onclick="quickRadioSearch('Lofi')" class="px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-slate-300">Lofi</button>
+                                    </div>
+                                    <div id="radio-search-results" class="text-left space-y-1.5"></div>
+
+                                    <!-- Ultimate fallback: if every search result happens to be blocked on this
+                                         network, a manually-pasted direct stream URL always works the same way. -->
+                                    <div class="shrink-0 border-t border-slate-800 pt-3 mt-1 space-y-1.5">
+                                        <div class="text-[10px] font-bold text-slate-500 text-left px-1">それでも聞けない場合は、ストリームURLを直接貼り付け</div>
+                                        <div class="flex items-center gap-1.5">
+                                            <input id="radio-manual-url" type="text" placeholder="https://... の直接ストリームURL" class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-red-400">
+                                            <button onclick="playManualRadioUrl()" class="px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-[11px] font-bold text-white">再生</button>
+                                        </div>
                                     </div>
                                 </div>
 
