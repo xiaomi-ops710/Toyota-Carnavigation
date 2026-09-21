@@ -4,7 +4,7 @@
         // GitHub Pages版: ここに自分のGemini APIキーを直接貼り付けてください
         // (取得先: https://aistudio.google.com/app/apikey)。
         // ⚠️ 静的サイトなので、このキーは誰でもブラウザの「ページのソースを表示」で読めてしまいます。
-        const GEMINI_API_KEY = 'AQ.Ab8RN6LyQMJGHECNs6t2JwNpGqmd4jW9Yvr5GHS-M9ViT31xUg';
+        const GEMINI_API_KEY = 'aq.ab8rn6lyqmjghecns6t2jwnpgqmd4jw9yvr5ghs-m9vit31xug';
         // NOTE: the boot-splash failsafe (uncaught-error handler, auto-hide timer, and the
         // manual "tap to continue" skip-button timer) now lives in a tiny dependency-free
         // <script> at the very top of index.html's <head>, ahead of every external resource,
@@ -183,28 +183,58 @@
             return calculateBearing(a.lat, a.lon, b.lat, b.lon);
         }
 
+        // NEW: returns the index into simSteps[] of whichever step covers the given traveled
+        // distance (i.e. the road actually being driven right now, as opposed to
+        // getDistanceToNextManeuver()'s *upcoming* step) — used to tell whether the vehicle
+        // is currently on a highway/expressway so its cruising speed can reflect that.
+        function getCurrentStepIndex(atDistM) {
+            if (!simStepCumDistM.length) return -1;
+            let idx = 0;
+            while (idx < simStepCumDistM.length - 1 && simStepCumDistM[idx + 1] <= atDistM) idx++;
+            return idx;
+        }
+
         // Target cruising speed derived from how sharply the road curves just ahead, plus a
         // slowdown as the next turn/maneuver approaches — replaces the old fixed "40〜44
         // repeating" placeholder with something that actually reacts to the route shape.
+        // NEW: now also reacts to the *type* of road currently being driven — a real
+        // highway/expressway (OSRM step has a route ref, or an IC/JCT/高速-style name) lets
+        // the simulated vehicle cruise at ~100km/h-class speeds, not the ~56km/h ceiling that
+        // used to apply everywhere regardless of road type.
         function computeTargetSpeedKmh(atDistM) {
             const total = simCumDistM[simCumDistM.length - 1] || 0;
             const hNow = getHeadingAtDistance(atDistM);
             const hAhead = getHeadingAtDistance(Math.min(atDistM + 70, total));
             let diff = Math.abs(((hAhead - hNow + 540) % 360) - 180);
 
+            const onHighway = isStepHighway(simSteps[getCurrentStepIndex(atDistM)]);
+            // Gentle, slow oscillation (not a fixed number) so a highway cruise visibly
+            // hovers "around 100km/h", the way real traffic/cruise-control speed drifts,
+            // rather than pinning at one exact value.
+            const highwayCruise = 100 + Math.sin(atDistM * 0.008) * 10; // ~90–110 km/h
+            const localCruise = 56;
+
             let target;
-            if (diff < 6) target = 56;
-            else if (diff < 18) target = 42;
-            else if (diff < 45) target = 28;
-            else target = 16;
+            if (onHighway) {
+                if (diff < 6) target = highwayCruise;
+                else if (diff < 18) target = 80;
+                else if (diff < 45) target = 55;
+                else target = 35;
+            } else {
+                if (diff < 6) target = localCruise;
+                else if (diff < 18) target = 42;
+                else if (diff < 45) target = 28;
+                else target = 16;
+            }
 
             // NEW: wet-road conditions bring the natural cruising speed down, same as a real driver easing off
             if (isWeatherRainActive) target = Math.round(target * 0.8);
 
             const { distToNextManeuverM } = getDistanceToNextManeuver();
             if (isFinite(distToNextManeuverM)) {
-                if (distToNextManeuverM < 35) target = Math.min(target, 14);
-                else if (distToNextManeuverM < 90) target = Math.min(target, 26);
+                if (distToNextManeuverM < 35) target = Math.min(target, onHighway ? 40 : 14);
+                else if (distToNextManeuverM < 90) target = Math.min(target, onHighway ? 60 : 26);
+                else if (distToNextManeuverM < 300) target = Math.min(target, onHighway ? 80 : target);
             }
             return target;
         }
@@ -450,18 +480,27 @@
             document.getElementById('scale-text').innerText = scales[z] || '2km';
         }
 
+        // NEW: rotates the map itself (see the #map CSS rule) so that in ヘディングアップ mode
+        // the current travel direction always points "up" on screen — the car icon's own
+        // rotation always equals the true heading (set in animateStep), so combined with this
+        // map rotation it visually stays pointing straight up, and in ノースアップ mode the map
+        // simply stays unrotated (north always up) while the car icon rotates to show heading.
+        function updateMapRotation() {
+            const mapEl = document.getElementById('map');
+            if (!mapEl) return;
+            mapEl.style.transform = (headingMode === 'heading') ? `rotate(${-currentHeading}deg)` : 'rotate(0deg)';
+        }
+
         function toggleHeadingMode() {
             playBeep();
-            const arrow = document.getElementById('compass-arrow');
             if (headingMode === 'north') {
                 headingMode = 'heading';
-                arrow.style.transform = `rotate(${currentHeading}deg)`;
                 speakGuidance('ヘディングアップ表示に変更しました。');
             } else {
                 headingMode = 'north';
-                arrow.style.transform = 'rotate(0deg)';
                 speakGuidance('ノースアップ表示に変更しました。');
             }
+            updateMapRotation();
         }
 
         function toggle3DJunctionEnable(forcedState = null) {
@@ -476,10 +515,10 @@
             const jctBox = document.getElementById('junction-3d-container');
 
             if (enable3DJunction) {
-                if (label) label.innerText = '3D案内: ON';
+                if (label) label.innerText = 'ON';
                 speakGuidance('3Dジャンクションガイドを有効にしました。');
             } else {
-                if (label) label.innerText = '3D案内: OFF';
+                if (label) label.innerText = 'OFF';
                 if (jctBox) jctBox.classList.add('hidden');
                 speakGuidance('3Dジャンクションガイドをオフにしました。');
             }
@@ -1227,6 +1266,14 @@
             const jctDistEl = document.getElementById('jct-distance');
             const bannerNextTurn = document.getElementById('banner-next-turn');
             const { distToNextManeuverM, upcomingStepIdx, upcomingStep } = getDistanceToNextManeuver();
+
+            // NEW: the posted speed limit badge now reflects the type of road actually being
+            // driven (expressway vs. ordinary road), the same way a real nav's speed-limit
+            // sign recognition would, instead of staying fixed regardless of road type —
+            // this also keeps it in sync with the now-dynamic highway cruising speed above.
+            const onHighwayNow = isStepHighway(simSteps[getCurrentStepIndex(simTraveledM)]);
+            const expectedLimit = onHighwayNow ? 100 : 60;
+            if (speedLimitKmh !== expectedLimit) setSpeedLimit(expectedLimit);
 
             const instructionText = upcomingStep ? maneuverToText(upcomingStep) : '直進';
             const roadName = (upcomingStep && upcomingStep.name) ? upcomingStep.name : '道なり';
@@ -2539,23 +2586,23 @@
                 // Calculate Heading Bearing
                 currentHeading = getHeadingAtDistance(simTraveledM);
 
-                // Rotate Car Icon Arrow
-                // FIXED: previously this always rotated the car icon to match the real travel
-                // heading, regardless of headingMode — so tapping the compass button changed the
-                // little corner arrow but never actually changed the car icon itself. Now
-                // "ノースアップ" really does keep the car marker fixed pointing up/north no matter
-                // how the road turns, and "ヘディングアップ" rotates it to match travel direction.
+                // Rotate Car Icon Arrow + Map
+                // FIXED: the car icon's own rotation now always reflects the vehicle's true
+                // compass heading (in both modes) — it's the *map* that rotates in
+                // "ヘディングアップ" mode (see updateMapRotation) so the travel direction always
+                // points up on screen while the car icon itself stays visually fixed pointing
+                // up; in "ノースアップ" mode the map stays fixed north and the car icon rotates
+                // to show its real heading, as before.
                 const carElem = document.getElementById('car-arrow-element');
                 if (carElem) {
-                    carElem.style.transform = (headingMode === 'north') ? 'rotate(0deg)' : `rotate(${currentHeading}deg)`;
+                    carElem.style.transform = `rotate(${currentHeading}deg)`;
                 }
-                // The small corner compass arrow, in north-up mode, now continuously shows the
-                // vehicle's real travel direction relative to true north (like a real compass
-                // needle) instead of being frozen at whatever it showed when the button was tapped.
-                if (headingMode === 'north') {
-                    const compassArrow = document.getElementById('compass-arrow');
-                    if (compassArrow) compassArrow.style.transform = `rotate(${currentHeading}deg)`;
-                }
+                updateMapRotation();
+                // The small corner compass arrow continuously shows the vehicle's real travel
+                // direction relative to true north (like a real compass needle), independent of
+                // which map display mode is active.
+                const compassArrow = document.getElementById('compass-arrow');
+                if (compassArrow) compassArrow.style.transform = `rotate(${currentHeading}deg)`;
 
                 carMarker.setLatLng(currentPos);
                 // NEW: only auto-pan the map while in "follow" mode — once the user drags the
@@ -2601,7 +2648,7 @@
             playBeep();
             safetyAssistOn = forcedState !== null ? forcedState : !safetyAssistOn;
             const label = document.getElementById('label-safety-toggle');
-            if (label) label.innerText = safetyAssistOn ? '安全支援: ON' : '安全支援: OFF';
+            if (label) label.innerText = safetyAssistOn ? 'ON' : 'OFF';
             if (!safetyAssistOn) hideSafetyHud();
             speakGuidance(safetyAssistOn ? '運転支援機能を有効にしました。' : '運転支援機能をオフにしました。');
         }
