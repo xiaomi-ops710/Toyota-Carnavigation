@@ -3523,15 +3523,15 @@ NAVIGATE: <場所の名前>
                         <div class="font-bold text-cyan-400 text-sm border-b border-slate-800 pb-1">Toyota Safety Sense & 3D表示設定</div>
                         <div class="flex justify-between items-center py-1">
                             <span class="font-bold text-white">3Dジャンクション案内を有効化</span>
-                            <input type="checkbox" ${enable3DJunction ? 'checked' : ''} onchange="toggle3DJunctionEnable(this.checked)" class="w-5 h-5 accent-blue-600">
+                            <input type="checkbox" ${enable3DJunction ? 'checked' : ''} onchange="toggle3DJunctionEnable(this.checked)" class="m3-switch m3-blue">
                         </div>
                         <div class="flex justify-between items-center py-1 border-t border-slate-800">
                             <span class="font-bold text-white">PDA (プロアクティブドライビングアシスト)</span>
-                            <input type="checkbox" checked class="w-5 h-5 accent-blue-600">
+                            <input type="checkbox" checked class="m3-switch m3-blue">
                         </div>
                         <div class="flex justify-between items-center py-1 border-t border-slate-800">
                             <span class="font-bold text-white">安全運転支援 HUD (前方衝突・車線逸脱・速度超過)</span>
-                            <input type="checkbox" ${safetyAssistOn ? 'checked' : ''} onchange="toggleSafetyAssist(this.checked)" class="w-5 h-5 accent-red-600">
+                            <input type="checkbox" ${safetyAssistOn ? 'checked' : ''} onchange="toggleSafetyAssist(this.checked)" class="m3-switch m3-red">
                         </div>
                         <div class="flex justify-between items-center py-1 border-t border-slate-800">
                             <span class="font-bold text-white">速度超過アラートしきい値</span>
