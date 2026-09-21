@@ -4,7 +4,7 @@
         // GitHub Pages版: ここに自分のGemini APIキーを直接貼り付けてください
         // (取得先: https://aistudio.google.com/app/apikey)。
         // ⚠️ 静的サイトなので、このキーは誰でもブラウザの「ページのソースを表示」で読めてしまいます。
-        const GEMINI_API_KEY = 'ここにGemini APIキーを貼り付け';
+        const GEMINI_API_KEY = 'AQ.Ab8RN6LyQMJGHECNs6t2JwNpGqmd4jW9Yvr5GHS-M9ViT31xUg';
         // NOTE: the boot-splash failsafe (uncaught-error handler, auto-hide timer, and the
         // manual "tap to continue" skip-button timer) now lives in a tiny dependency-free
         // <script> at the very top of index.html's <head>, ahead of every external resource,
@@ -14,8 +14,6 @@
         let currentPos = [35.6762, 139.7650]; // Default: Tokyo Ginza
         let originPos = null;
         let destinationPos = null;
-        let currentDestinationName = '目的地'; // NEW: tracked for 地点登録 (save as favorite) etc.
-        let simAvgSpeedMps = 15; // NEW: route-average speed, used for the JCT/IC list's ETA estimates
         let currentDestName = '';
         let viaPoint = null;       // NEW FEATURE: optional single waypoint ("経由地")
         let viaPointName = '';
@@ -50,6 +48,18 @@
         // async responses if the driver moves past the junction before a fetch resolves.
         let jctBuildingCache = new Map();
         let jctRequestToken = 0;
+
+        // NEW FEATURE: renewed Toyota-style destination search front menu (category grid +
+        // 特別メモリ quick-memory slots + 自宅登録) — see openDestinationCategoryMenu().
+        let memorySlots = [null, null, null, null, null]; // 特別メモリ 1〜5, each {name, lat, lon} or null
+        let homeLocation = null; // {name, lat, lon} once registered via 自宅登録
+        let pendingMemorySlotIndex = null; // set while a search is being performed to fill a memory slot
+        let activeDestScreen = 'category'; // tracks which destination-search screen is currently open, so favorite add/remove can refresh the right one
+
+        // NEW FEATURE: JCT/IC passing list (highway "cruise" mode) — shown on the right side
+        // while several upcoming maneuvers are highway interchanges and none is imminent yet;
+        // yields to the close-range 3D junction view once a maneuver is actually near.
+        let jctListManuallyHidden = false;
         let simCoords = [];
         let simSteps = [];
         let routeTotalDistanceM = 0;
@@ -61,6 +71,7 @@
         // why straight OSRM segments with few far-apart points used to fly by unrealistically)
         let simCumDistM = [];      // cumulative meters along simCoords, parallel array
         let simStepCumDistM = [];  // cumulative meters at the START of each simSteps[] entry
+        let simStepCumTimeS = [];  // NEW: cumulative OSRM-estimated seconds at the START of each simSteps[] entry — used to estimate arrival clock times for the IC/JCT passing list
         let simTraveledM = 0;      // how far along the route we've driven, in meters
         let simCurrentSpeedMps = 0; // smoothed current simulated vehicle speed (m/s)
         let simLastFrameTime = null;
@@ -137,8 +148,10 @@
                 simCumDistM.push(simCumDistM[i - 1] + d);
             }
             simStepCumDistM = [0];
+            simStepCumTimeS = [0];
             for (let i = 0; i < simSteps.length; i++) {
                 simStepCumDistM.push(simStepCumDistM[i] + (simSteps[i].distance || 0));
+                simStepCumTimeS.push(simStepCumTimeS[i] + (simSteps[i].duration || 0));
             }
         }
 
@@ -514,8 +527,12 @@
 
             try {
                 threeScene = new THREE.Scene();
-                threeScene.background = new THREE.Color(0x070a12);
-                threeScene.fog = new THREE.FogExp2(0x070a12, 0.012);
+                // NEW: bright daytime look (was a dark night-blue scene) — the scene background
+                // is left transparent so the CSS sky gradient on #jct-canvas-parent shows through
+                // the alpha-enabled renderer, and fog is a light, hazy sky-blue instead of near-black
+                // so distant buildings/road fade into the horizon like a real sunny day rather than
+                // into darkness.
+                threeScene.fog = new THREE.FogExp2(0xcfe9f7, 0.0055);
 
                 const width = container.clientWidth || 300;
                 const height = container.clientHeight || 250;
@@ -524,17 +541,30 @@
                 update3DCameraPosition();
 
                 threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                threeRenderer.setClearColor(0x000000, 0); // fully transparent clear — CSS sky shows through
                 threeRenderer.setSize(width, height);
                 threeRenderer.shadowMap.enabled = true;
+                threeRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
                 container.appendChild(threeRenderer.domElement);
 
-                // Lighting
-                const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+                // Lighting — bright warm "sun" + sky/ground bounce fill, replacing the old
+                // moody blue night lighting so the whole scene reads as a clear, sunlit day.
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
                 threeScene.add(ambientLight);
 
-                const dirLight = new THREE.DirectionalLight(0x60a5fa, 1.4);
-                dirLight.position.set(30, 60, 40);
+                const dirLight = new THREE.DirectionalLight(0xfff3d6, 2.0);
+                dirLight.position.set(45, 90, 35);
+                dirLight.castShadow = true;
+                dirLight.shadow.mapSize.set(1024, 1024);
+                dirLight.shadow.camera.left = -140;
+                dirLight.shadow.camera.right = 140;
+                dirLight.shadow.camera.top = 140;
+                dirLight.shadow.camera.bottom = -140;
+                dirLight.shadow.camera.near = 1;
+                dirLight.shadow.camera.far = 260;
+                dirLight.shadow.bias = -0.0015;
                 threeScene.add(dirLight);
+                threeScene.add(dirLight.target);
 
                 // Group Containers for Route-following Objects
                 roadGroup = new THREE.Group();
@@ -542,22 +572,24 @@
                 threeScene.add(roadGroup);
                 threeScene.add(buildingGroup);
 
-                // Sky / ambient fill so buildings read correctly from every angle
-                const hemiLight = new THREE.HemisphereLight(0x3b82f6, 0x0b0f17, 0.6);
+                // Sky (light blue) / ground-bounce (warm green) fill so every face of every
+                // building and the road reads correctly lit from any camera angle, day-bright.
+                const hemiLight = new THREE.HemisphereLight(0x9fd3f7, 0x8a9a6e, 0.9);
                 threeScene.add(hemiLight);
 
-                // Asphalt Ground Plane (replaces the old abstract wireframe-only grid)
-                const groundGeo = new THREE.PlaneGeometry(400, 400);
-                const groundMat = new THREE.MeshStandardMaterial({ color: 0x11161f, roughness: 0.95 });
+                // A few soft painted-looking clouds high in the sky for atmosphere.
+                createSkyClouds();
+
+                // Grass/terrain Ground Plane (replaces the old flat dark asphalt-colored plane
+                // that covered the whole view) — real ground around a road is grass/earth, not
+                // asphalt, so the road itself now reads as a distinct paved ribbon on top of it.
+                const groundGeo = new THREE.PlaneGeometry(500, 500);
+                const groundMat = new THREE.MeshStandardMaterial({ map: createGrassTexture(), roughness: 0.95 });
                 const ground = new THREE.Mesh(groundGeo, groundMat);
                 ground.rotation.x = -Math.PI / 2;
-                ground.position.y = -0.05;
+                ground.position.y = -0.06;
+                ground.receiveShadow = true;
                 threeScene.add(ground);
-
-                // Faint reference grid on top of the asphalt for depth perception
-                const gridHelper = new THREE.GridHelper(400, 80, 0x1e293b, 0x141a24);
-                gridHelper.position.y = -0.02;
-                threeScene.add(gridHelper);
 
                 // Build Overhead Expressway Sign Gantry
                 createOverheadGantry();
@@ -566,6 +598,67 @@
             } catch (err) {
                 console.log("WebGL 3D fallback active:", err);
             }
+        }
+
+        // NEW: procedurally-painted textures (no external image downloads needed) so the
+        // ground and road read as real grass/asphalt instead of flat single-color planes.
+        function createGrassTexture() {
+            const c = document.createElement('canvas');
+            c.width = c.height = 256;
+            const ctx = c.getContext('2d');
+            ctx.fillStyle = '#5a9450';
+            ctx.fillRect(0, 0, 256, 256);
+            for (let i = 0; i < 2200; i++) {
+                const shade = 30 + Math.random() * 55;
+                ctx.fillStyle = Math.random() > 0.5
+                    ? `rgba(${70 + shade * 0.3},${140 + shade * 0.5},${60 + shade * 0.2},0.5)`
+                    : `rgba(${60},${110 - shade * 0.2},${50},0.35)`;
+                const x = Math.random() * 256, y = Math.random() * 256;
+                ctx.fillRect(x, y, 2, 2 + Math.random() * 3);
+            }
+            const tex = new THREE.CanvasTexture(c);
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(30, 30);
+            return tex;
+        }
+
+        function createAsphaltTexture() {
+            const c = document.createElement('canvas');
+            c.width = c.height = 128;
+            const ctx = c.getContext('2d');
+            ctx.fillStyle = '#54585e';
+            ctx.fillRect(0, 0, 128, 128);
+            for (let i = 0; i < 900; i++) {
+                const v = 60 + Math.random() * 50;
+                ctx.fillStyle = `rgba(${v},${v + 2},${v + 4},0.35)`;
+                ctx.fillRect(Math.random() * 128, Math.random() * 128, 1.5, 1.5);
+            }
+            const tex = new THREE.CanvasTexture(c);
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(4, 24);
+            return tex;
+        }
+
+        // A handful of soft, painted-cloud sprites high in the sky — cheap atmosphere that
+        // reads well against the CSS sky gradient without needing any external texture asset.
+        function createSkyClouds() {
+            const c = document.createElement('canvas');
+            c.width = 128; c.height = 64;
+            const ctx = c.getContext('2d');
+            const grad = ctx.createRadialGradient(64, 32, 4, 64, 32, 60);
+            grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 128, 64);
+            const tex = new THREE.CanvasTexture(c);
+            const positions = [[-60, 45, -120], [40, 55, -160], [-20, 40, -90], [70, 48, -145], [10, 62, -205]];
+            positions.forEach(([x, y, z]) => {
+                const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false });
+                const sprite = new THREE.Sprite(mat);
+                sprite.scale.set(60 + Math.random() * 30, 26 + Math.random() * 10, 1);
+                sprite.position.set(x, y, z);
+                threeScene.add(sprite);
+            });
         }
 
         /* Convert a real-world lat/lng into local 3D scene meters, anchored at the
@@ -625,6 +718,27 @@
             roadGroup.add(cone);
         }
 
+        /* NEW: a light concrete curb/shoulder strip offset to one side of the road curve —
+           built by projecting a parallel curve at `offsetDist` along each point's local
+           normal, then tubing that. Reused for both the left and right edge of the road. */
+        function buildCurbStrip(curve, segments, offsetDist, color) {
+            const pts = [];
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                const p = curve.getPointAt(t);
+                const tangent = curve.getTangentAt(t);
+                const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+                pts.push(p.clone().addScaledVector(normal, offsetDist));
+            }
+            const curbCurve = new THREE.CatmullRomCurve3(pts);
+            const geo = new THREE.TubeGeometry(curbCurve, segments, 0.28, 6, false);
+            const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.85 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.y += 0.16;
+            mesh.receiveShadow = true;
+            roadGroup.add(mesh);
+        }
+
         /* NEW: street lamps along the real route curve, alternating sides — mainly to stop the
            night-time junction scene from reading as an empty test track. */
         function buildStreetLamps(curve, segments) {
@@ -637,18 +751,20 @@
                 const side = i % 2 === 0 ? 1 : -1;
                 const base = p.clone().addScaledVector(normal, side * 5.2);
 
+                // NEW: daytime street lamps — a plain metal pole/head (was a glowing yellow
+                // orb, which only makes sense at night; the scene is now a bright sunny day).
                 const poleGeo = new THREE.CylinderGeometry(0.12, 0.15, 6.5);
-                const poleMat = new THREE.MeshStandardMaterial({ color: 0x475569 });
+                const poleMat = new THREE.MeshStandardMaterial({ color: 0x707880, roughness: 0.5, metalness: 0.4 });
                 const pole = new THREE.Mesh(poleGeo, poleMat);
                 pole.position.set(base.x, 3.25, base.z);
+                pole.castShadow = true;
                 roadGroup.add(pole);
 
                 const lampGeo = new THREE.SphereGeometry(0.35, 8, 8);
-                const lampMat = new THREE.MeshStandardMaterial({
-                    color: 0xfde68a, emissive: 0xfde68a, emissiveIntensity: 1.2
-                });
+                const lampMat = new THREE.MeshStandardMaterial({ color: 0xe8e4d8, roughness: 0.4 });
                 const lamp = new THREE.Mesh(lampGeo, lampMat);
                 lamp.position.set(base.x, 6.5, base.z);
+                lamp.castShadow = true;
                 roadGroup.add(lamp);
             }
         }
@@ -676,9 +792,16 @@
             const curve = new THREE.CatmullRomCurve3(pts);
             const segments = Math.max(24, pts.length * 3);
 
+            // NEW: brighter, textured asphalt (was a near-black flat color) so the road reads
+            // as real daytime pavement, plus light concrete curb/shoulder strips along both
+            // edges for a more realistic finished-road silhouette against the grass ground.
             const roadGeo = new THREE.TubeGeometry(curve, segments, 3.6, 8, false);
-            const roadMat = new THREE.MeshStandardMaterial({ color: 0x242e3c, roughness: 0.85, metalness: 0.05 });
-            roadGroup.add(new THREE.Mesh(roadGeo, roadMat));
+            const roadMat = new THREE.MeshStandardMaterial({ map: createAsphaltTexture(), color: 0xaaaaaa, roughness: 0.92, metalness: 0.02 });
+            const roadMesh = new THREE.Mesh(roadGeo, roadMat);
+            roadMesh.receiveShadow = true;
+            roadGroup.add(roadMesh);
+            buildCurbStrip(curve, segments, 3.95, 0xdcd8cc);
+            buildCurbStrip(curve, segments, -3.95, 0xdcd8cc);
 
             // Highlighted guidance centerline (the path to follow)
             const lineGeo = new THREE.TubeGeometry(curve, segments, 0.35, 6, false);
@@ -780,18 +903,26 @@
                 const height = estimateBuildingHeight(b.tags);
                 const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
                 const isResidential = (b.tags.building === 'house' || b.tags.building === 'residential');
+                // NEW: light, realistic daytime concrete/render tones (was near-black navy),
+                // matching the scene's overall brightness pass.
+                const residentialPalette = [0xe4d9c6, 0xead9c0, 0xd8c8ae];
+                const commercialPalette = [0xcdd6dc, 0xc0ccd6, 0xd8d8d0, 0xc9c2b2];
+                const palette = isResidential ? residentialPalette : commercialPalette;
                 const mat = new THREE.MeshStandardMaterial({
-                    color: isResidential ? 0x1e2a3f : (rendered % 2 === 0 ? 0x0f172a : 0x1a1f36),
-                    roughness: 0.55,
-                    metalness: 0.1
+                    color: palette[rendered % palette.length],
+                    roughness: 0.8,
+                    metalness: 0.05
                 });
                 const mesh = new THREE.Mesh(geo, mat);
                 mesh.rotation.x = -Math.PI / 2;
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
                 buildingGroup.add(mesh);
 
-                // Faint edge highlight, evoking lit window lines on the real facade
+                // Subtle architectural edge lines (dark outline instead of the old glowing
+                // blue "night window" look, since the scene is now a bright day scene)
                 const edges = new THREE.EdgesGeometry(geo);
-                const edgeLines = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.25 }));
+                const edgeLines = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x3a4450, transparent: true, opacity: 0.3 }));
                 edgeLines.rotation.x = -Math.PI / 2;
                 buildingGroup.add(edgeLines);
 
@@ -803,16 +934,20 @@
         /* Used only when real OpenStreetMap building data can't be fetched (offline, or the
            Overpass API is unreachable) so the junction view still has some city context. */
         function renderProceduralFallbackBuildings() {
+            // NEW: bright daytime concrete tones (was near-black navy/purple night colors)
+            const palette = [0xcdd6dc, 0xd8d0bd, 0xc9c2b2, 0xd2ccc0];
             for (let i = -3; i <= 3; i++) {
                 if (i === 0) continue;
                 const h = 15 + Math.abs(i) * 10 + Math.random() * 15;
                 const bGeo = new THREE.BoxGeometry(10, h, 10);
                 const bMat = new THREE.MeshStandardMaterial({
-                    color: i % 2 === 0 ? 0x0f172a : 0x1e1b4b,
-                    roughness: 0.3
+                    color: palette[(i + 3) % palette.length],
+                    roughness: 0.8
                 });
                 const bMesh = new THREE.Mesh(bGeo, bMat);
                 bMesh.position.set(i * 22, h / 2, -10 - Math.abs(i) * 15);
+                bMesh.castShadow = true;
+                bMesh.receiveShadow = true;
                 buildingGroup.add(bMesh);
             }
         }
@@ -853,21 +988,37 @@
         function createOverheadGantry() {
             const gantryGroup = new THREE.Group();
             const poleGeo = new THREE.CylinderGeometry(0.3, 0.3, 12);
-            const poleMat = new THREE.MeshStandardMaterial({ color: 0x64748b });
+            const poleMat = new THREE.MeshStandardMaterial({ color: 0x8b939c, roughness: 0.6, metalness: 0.3 });
 
             const leftPole = new THREE.Mesh(poleGeo, poleMat);
             leftPole.position.set(-10, 6, 0);
+            leftPole.castShadow = true;
 
             const rightPole = new THREE.Mesh(poleGeo, poleMat);
             rightPole.position.set(10, 6, 0);
+            rightPole.castShadow = true;
 
             const beamGeo = new THREE.BoxGeometry(22, 0.6, 0.6);
             const beam = new THREE.Mesh(beamGeo, poleMat);
             beam.position.set(0, 11.5, 0);
+            beam.castShadow = true;
+
+            // NEW: a real green expressway signboard hanging from the gantry, like the ones
+            // visible on real Japanese expressway overhead signs (was bare metal beams only).
+            const signGeo = new THREE.BoxGeometry(15, 3.4, 0.35);
+            const signMat = new THREE.MeshStandardMaterial({ color: 0x0e7a3e, roughness: 0.55 });
+            const signBoard = new THREE.Mesh(signGeo, signMat);
+            signBoard.position.set(0, 9.4, 0.5);
+            signBoard.castShadow = true;
+            const signBorderGeo = new THREE.EdgesGeometry(signGeo);
+            const signBorder = new THREE.LineSegments(signBorderGeo, new THREE.LineBasicMaterial({ color: 0xffffff }));
+            signBorder.position.copy(signBoard.position);
 
             gantryGroup.add(leftPole);
             gantryGroup.add(rightPole);
             gantryGroup.add(beam);
+            gantryGroup.add(signBoard);
+            gantryGroup.add(signBorder);
             gantryGroup.position.set(0, 0, -15);
             threeScene.add(gantryGroup);
         }
@@ -955,6 +1106,98 @@
             };
         }
 
+        /* ====================================================================
+           NEW FEATURE: IC/JCT PASSING LIST ("ハイウェイモード")
+           Real Toyota nav switches its right-hand panel between a scrolling list of
+           upcoming IC/JCT (while cruising along an expressway, well before the next one)
+           and the close-range 3D junction view (once actually approaching one). This
+           reproduces that behavior using the same real OSRM step data already driving
+           the rest of the simulation.
+           ==================================================================== */
+
+        // Heuristic for "this step is a highway interchange/junction" rather than an
+        // ordinary local-road turn — based on OSRM's own maneuver type plus the kind of
+        // naming/reference real Japanese expressway data carries (route number "ref",
+        // or an IC/JCT keyword in the name).
+        function isStepHighway(step) {
+            if (!step) return false;
+            if (step.ref) return true;
+            const name = step.name || '';
+            if (/IC|JCT|インターチェンジ|ジャンクション|高速|自動車道|バイパス|号線/.test(name)) return true;
+            const type = step.maneuver && step.maneuver.type;
+            return type === 'on ramp' || type === 'off ramp' || type === 'merge' || type === 'fork';
+        }
+
+        // Derives a short display tag ("IC" / "JCT") plus a clean label for one upcoming
+        // highway step, mirroring how a real gantry sign would present it.
+        function classifyJunctionStep(step) {
+            const rawName = (step.name || '').trim();
+            const cleaned = rawName.replace(/^(東名|首都高速|新東名|中央自動車道|名古屋高速)?\s*/, '').replace(/(インターチェンジ|ジャンクション)$/, '').trim();
+            const isJct = /JCT|ジャンクション/.test(rawName) || step.maneuver?.type === 'fork' || step.maneuver?.type === 'merge';
+            const tag = isJct ? 'JCT' : 'IC';
+            const label = cleaned || rawName || (step.ref ? step.ref : (isJct ? '分岐' : '出口'));
+            return { tag, label };
+        }
+
+        // Scans ahead in simSteps (from the current position) for up to maxCount upcoming
+        // highway steps, returning their distance-ahead and an estimated arrival clock time.
+        // Time is estimated by scaling the *remaining* portion of OSRM's own route duration
+        // proportionally to remaining distance — the same approximation updateEtaDisplay()
+        // already uses — so it stays consistent with the ETA shown elsewhere in the UI.
+        function computeUpcomingJunctions(maxCount = 4) {
+            if (!simSteps.length || simStepCumDistM.length < 2) return [];
+            const total = simCumDistM[simCumDistM.length - 1] || 0;
+            if (total <= 0) return [];
+            const remainingTotalM = Math.max(0, total - simTraveledM);
+            const remainingTotalS = routeTotalDurationS * (remainingTotalM / total);
+            const nowMs = Date.now();
+
+            const results = [];
+            for (let i = 0; i < simSteps.length && results.length < maxCount; i++) {
+                const stepStartM = simStepCumDistM[i];
+                if (stepStartM <= simTraveledM + 5) continue; // already passed / directly underneath us
+                const step = simSteps[i];
+                if (!isStepHighway(step)) continue;
+
+                const distRemainM = stepStartM - simTraveledM;
+                const timeRemainS = remainingTotalM > 0 ? remainingTotalS * (distRemainM / remainingTotalM) : 0;
+                const arrival = new Date(nowMs + timeRemainS * 1000);
+                const { tag, label } = classifyJunctionStep(step);
+                results.push({
+                    tag, label,
+                    distKm: distRemainM >= 1000 ? (distRemainM / 1000).toFixed(1) + 'km' : Math.round(distRemainM) + 'm',
+                    etaClock: `${String(arrival.getHours()).padStart(2, '0')}:${String(arrival.getMinutes()).padStart(2, '0')}`
+                });
+            }
+            return results;
+        }
+
+        function renderJctListPanel(items) {
+            const listEl = document.getElementById('jct-list-items');
+            const roadEl = document.getElementById('jct-list-current-road');
+            if (!listEl) return;
+            listEl.innerHTML = items.map((it, idx) => `
+                <div class="${idx === 0 ? 'bg-blue-900/60 border-l-4 border-cyan-400' : 'border-l-4 border-transparent'}">
+                    <div class="flex items-center justify-between px-3 py-1.5">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <span class="shrink-0 text-[10px] font-black px-1.5 py-0.5 rounded ${it.tag === 'JCT' ? 'bg-emerald-600' : 'bg-blue-600'} text-white">${it.tag}</span>
+                            <span class="font-bold text-sm text-white truncate">${it.label}</span>
+                        </div>
+                        <span class="text-cyan-200 font-black digital-font text-base shrink-0 ml-2">${it.distKm}</span>
+                    </div>
+                    <div class="px-3 pb-1.5 -mt-0.5 text-[11px] text-slate-400 digital-font">${it.etaClock}</div>
+                </div>
+            `).join('');
+            if (roadEl) roadEl.innerText = document.getElementById('current-road-text')?.innerText || '道なり';
+        }
+
+        function toggleJctListManualHide() {
+            playBeep();
+            jctListManuallyHidden = true;
+            const panel = document.getElementById('jct-list-panel');
+            if (panel) panel.classList.add('hidden');
+        }
+
         // NEW: cache of reverse-geocoded landmark/intersection names near each maneuver point,
         // keyed by step index, so we only hit Nominatim once per maneuver rather than every frame.
         const jctLandmarkCache = {};
@@ -1026,9 +1269,15 @@
                 lastLongStraightAnnounceIdx = upcomingStepIdx;
             }
 
-            if (!enable3DJunction || !jctBox) return;
+            // NEW: the right-side panel now alternates between the close-range 3D junction
+            // view (a maneuver is imminent) and the IC/JCT passing list (cruising along an
+            // expressway well ahead of the next one) — matching how a real Toyota nav's
+            // panel switches between these two modes rather than always showing one or the other.
+            const jctListPanel = document.getElementById('jct-list-panel');
+            const nearManeuver = enable3DJunction && jctBox && isFinite(distToNextManeuverM) && distToNextManeuverM < 220 && distToNextManeuverM > 0;
 
-            if (isFinite(distToNextManeuverM) && distToNextManeuverM < 220 && distToNextManeuverM > 0) {
+            if (nearManeuver) {
+                if (jctListPanel) jctListPanel.classList.add('hidden');
                 if (jctDistEl) jctDistEl.innerText = `あと ${Math.round(distToNextManeuverM)}m (実地形追従3D)`;
                 lastJctInstructionText = instructionText;
                 upcomingLandmarkStepIdx = upcomingStepIdx;
@@ -1051,7 +1300,18 @@
                     }
                 }
             } else {
-                jctBox.classList.add('hidden');
+                if (jctBox) jctBox.classList.add('hidden');
+                if (jctListPanel && !jctListManuallyHidden && simTraveledM > 0) {
+                    const items = computeUpcomingJunctions(4);
+                    if (items.length > 0) {
+                        renderJctListPanel(items);
+                        jctListPanel.classList.remove('hidden');
+                    } else {
+                        jctListPanel.classList.add('hidden');
+                    }
+                } else if (jctListPanel) {
+                    jctListPanel.classList.add('hidden');
+                }
             }
         }
 
@@ -1534,14 +1794,345 @@
             if (!favoriteDestinations.some(f => f.name === name)) {
                 favoriteDestinations.unshift({ name, lat, lon });
             }
-            openDestinationModal();
+            speakGuidance(`${name}をメモリ地点に登録しました。`);
+            // NEW: only refresh a destination screen if one is actually open (this is also
+            // called from the ETA panel's star button while simply driving, where popping a
+            // full-screen destination search over the map would be unwelcome).
+            const modalEl = document.getElementById('app-modal');
+            if (modalEl && !modalEl.classList.contains('hidden')) refreshActiveDestScreen();
         }
 
         function removeFavorite(name) {
             playBeep();
             favoriteDestinations = favoriteDestinations.filter(f => f.name !== name);
-            openDestinationModal();
+            refreshActiveDestScreen();
         }
+
+        function refreshActiveDestScreen() {
+            if (activeDestScreen === 'memory') openMemoryPointsScreen();
+            else if (activeDestScreen === 'name') openDestinationModal();
+            else openDestinationCategoryMenu();
+        }
+
+        /* ====================================================================
+           NEW FEATURE: renewed Toyota-style destination search front menu.
+           Matches the real T-Connect nav's "目的地" screen: a row of search-method
+           category icons (ジャンル / 電話番号 / 住所 / メモリ地点 / 名称) plus a
+           "特別メモリ" quick-memory row (5 numbered slots, 履歴, 自宅登録) beneath it.
+           This is now the default entry point; each category routes into its own
+           focused search screen (some of which reuse the existing free-text search
+           machinery below via the shared #dest-input / searchLocation('dest') flow).
+           ==================================================================== */
+        function memorySlotButtonHtml(i) {
+            const slot = memorySlots[i];
+            if (slot) {
+                return `<button onclick="useMemorySlot(${i})" title="${slot.name.replace(/"/g, '&quot;')}" class="bg-blue-900/70 border border-blue-500 rounded-xl flex flex-col items-center justify-center py-2.5 active:scale-95 transition hover:border-blue-300">
+                    <span class="text-base font-black text-white">${i + 1}</span>
+                </button>`;
+            }
+            return `<button onclick="assignMemorySlot(${i})" class="bg-slate-800 border border-slate-700 rounded-xl flex flex-col items-center justify-center py-2.5 active:scale-95 transition hover:border-slate-500">
+                <span class="text-base font-black text-slate-500">${i + 1}</span>
+            </button>`;
+        }
+
+        function openDestinationCategoryMenu() {
+            playBeep();
+            activeDestScreen = 'category';
+            const body = `
+                <div class="space-y-6">
+                    <div>
+                        <div class="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
+                            <button onclick="selectDestCategory('genre')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl py-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                                <span class="material-symbols-filled text-3xl text-cyan-300">storefront</span>
+                                <span class="text-xs font-bold text-slate-100">ジャンル</span>
+                            </button>
+                            <button onclick="selectDestCategory('phone')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl py-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                                <span class="material-symbols-filled text-3xl text-cyan-300">call</span>
+                                <span class="text-xs font-bold text-slate-100">電話番号</span>
+                            </button>
+                            <button onclick="selectDestCategory('address')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl py-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                                <span class="material-symbols-filled text-3xl text-cyan-300">home_pin</span>
+                                <span class="text-xs font-bold text-slate-100">住所</span>
+                            </button>
+                            <button onclick="selectDestCategory('memory')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl py-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                                <span class="material-symbols-filled text-3xl text-cyan-300">flag</span>
+                                <span class="text-xs font-bold text-slate-100">メモリ地点</span>
+                            </button>
+                            <button onclick="selectDestCategory('name')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl py-4 flex flex-col items-center gap-1.5 active:scale-95 transition relative">
+                                <span class="material-symbols-filled text-3xl text-cyan-300">edit</span>
+                                <span class="text-xs font-bold text-slate-100">名称</span>
+                            </button>
+                        </div>
+                        <div class="flex justify-end mt-2">
+                            <button onclick="openMoreDestCategories()" class="text-slate-400 hover:text-white flex items-center gap-0.5 text-[11px] font-bold px-2 py-1 rounded-lg hover:bg-slate-800">
+                                その他の検索方法 <span class="material-symbols-filled text-base">chevron_right</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="text-[11px] font-bold text-slate-400 mb-1.5 ml-1">特別メモリ</div>
+                        <div class="grid grid-cols-7 gap-2">
+                            ${[0, 1, 2, 3, 4].map(i => memorySlotButtonHtml(i)).join('')}
+                            <button onclick="openHistoryScreen()" class="bg-slate-800 border border-slate-700 rounded-xl flex flex-col items-center justify-center py-1.5 active:scale-95 transition hover:border-slate-500">
+                                <span class="material-symbols-filled text-lg text-slate-200">history</span>
+                                <span class="text-[9px] font-bold text-slate-300 mt-0.5">履歴</span>
+                            </button>
+                            <button onclick="handleHomeRegisterTap()" class="bg-slate-800 border border-slate-700 rounded-xl flex flex-col items-center justify-center py-1.5 active:scale-95 transition hover:border-emerald-500">
+                                <span class="material-symbols-filled text-lg ${homeLocation ? 'text-emerald-400' : 'text-slate-300'}">home</span>
+                                <span class="text-[9px] font-bold text-slate-300 mt-0.5">${homeLocation ? '自宅' : '自宅登録'}</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <button onclick="openFullRouteSearchModal()" class="w-full py-2.5 rounded-2xl bg-blue-900/50 hover:bg-blue-900/80 border border-blue-600/60 text-blue-200 text-xs font-bold flex items-center justify-center gap-1.5">
+                        <span class="material-symbols-filled text-base">alt_route</span> 出発地・経由地を設定してAIルート検索
+                    </button>
+                </div>
+            `;
+            openCustomModal('目的地', body, { fullscreen: true });
+        }
+
+        function selectDestCategory(type) {
+            playBeep();
+            if (type === 'name') { openDestinationModal(); return; }
+            if (type === 'address') { openAddressSearchScreen(); return; }
+            if (type === 'genre') { openGenreCategoryScreen(); return; }
+            if (type === 'phone') { openPhoneSearchScreen(); return; }
+            if (type === 'memory') { openMemoryPointsScreen(); return; }
+            if (type === 'postal') { openAddressSearchScreen('郵便番号で探す', '例: 150-0001'); return; }
+            if (type === 'coords') { openCoordsSearchScreen(); return; }
+        }
+
+        function openMoreDestCategories() {
+            playBeep();
+            const body = `
+                <div class="grid grid-cols-2 gap-3">
+                    <button onclick="selectDestCategory('postal')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl p-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                        <span class="material-symbols-filled text-2xl text-cyan-300">local_post_office</span>
+                        <span class="text-xs font-bold text-slate-100">郵便番号</span>
+                    </button>
+                    <button onclick="selectDestCategory('coords')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl p-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                        <span class="material-symbols-filled text-2xl text-cyan-300">explore</span>
+                        <span class="text-xs font-bold text-slate-100">緯度経度</span>
+                    </button>
+                </div>
+                <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline mt-4">← カテゴリ選択に戻る</button>
+            `;
+            openCustomModal('その他の検索方法', body, { fullscreen: true });
+        }
+
+        function openAddressSearchScreen(title, placeholder) {
+            activeDestScreen = 'address';
+            const hint = pendingMemorySlotIndex !== null
+                ? `<div class="text-[11px] text-blue-300 bg-blue-950/60 border border-blue-800 rounded-xl px-3 py-2">特別メモリ ${pendingMemorySlotIndex + 1} に登録する地点を検索してください</div>`
+                : '';
+            const body = `
+                <div class="space-y-3">
+                    ${hint}
+                    <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-red-400 transition">
+                        <span class="material-symbols-filled text-red-400 text-lg">home_pin</span>
+                        <input id="dest-input" type="text" placeholder="${placeholder || '都道府県・市区町村・番地など'}" class="flex-1 bg-transparent py-3 text-sm text-white placeholder-slate-500 focus:outline-none">
+                        <button onclick="searchLocation('dest')" class="w-11 h-11 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
+                            <span class="material-symbols-filled text-lg">search</span>
+                        </button>
+                    </div>
+                    <div id="dest-search-results" class="space-y-2"></div>
+                    <button onclick="pendingMemorySlotIndex = null; openDestinationCategoryMenu();" class="text-xs text-slate-400 hover:text-white underline">← カテゴリ選択に戻る</button>
+                </div>
+            `;
+            openCustomModal(title || '住所から探す', body, { fullscreen: true });
+        }
+
+        function openGenreCategoryScreen() {
+            playBeep();
+            activeDestScreen = 'genre';
+            const cats = [
+                { type: 'convenience', icon: 'storefront', label: 'コンビニ' },
+                { type: 'restaurant', icon: 'restaurant', label: '飲食店' },
+                { type: 'cafe', icon: 'local_cafe', label: 'カフェ' },
+                { type: 'gas_station', icon: 'local_gas_station', label: 'ガソリンスタンド' },
+                { type: 'ev_charge', icon: 'ev_station', label: 'EV充電' },
+                { type: 'parking', icon: 'local_parking', label: '駐車場' },
+                { type: 'hospital', icon: 'local_hospital', label: '病院' },
+                { type: 'hotel', icon: 'hotel', label: 'ホテル' },
+                { type: 'attraction', icon: 'photo_camera', label: '観光地' }
+            ];
+            const body = `
+                <div class="grid grid-cols-3 gap-3">
+                    ${cats.map(c => `
+                        <button onclick="closeModal(); openNearbyPOI('${c.type}')" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-400 rounded-2xl p-4 flex flex-col items-center gap-1.5 active:scale-95 transition">
+                            <span class="material-symbols-filled text-2xl text-cyan-300">${c.icon}</span>
+                            <span class="text-[11px] font-bold text-slate-200">${c.label}</span>
+                        </button>
+                    `).join('')}
+                </div>
+                <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline mt-4">← カテゴリ選択に戻る</button>
+            `;
+            openCustomModal('ジャンルで探す', body, { fullscreen: true });
+        }
+
+        // NEW: small built-in demo phone directory — Nominatim has no phone-number lookup,
+        // so a handful of well-known landmark numbers are matched locally to keep this
+        // category genuinely functional rather than a dead end.
+        const PHONE_DIRECTORY = [
+            { phone: '0334335111', name: '東京タワー', lat: 35.6586, lon: 139.7454 },
+            { phone: '0334422111', name: '東京スカイツリー', lat: 35.7101, lon: 139.8107 },
+            { phone: '0332132111', name: '皇居', lat: 35.6852, lon: 139.7528 },
+            { phone: '0455038822', name: '横浜赤レンガ倉庫', lat: 35.4527, lon: 139.6425 }
+        ];
+
+        function openPhoneSearchScreen() {
+            playBeep();
+            activeDestScreen = 'phone';
+            const body = `
+                <div class="space-y-3">
+                    <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-red-400 transition">
+                        <span class="material-symbols-filled text-red-400 text-lg">call</span>
+                        <input id="phone-input" type="tel" placeholder="0312345678 (ハイフンなし)" class="flex-1 bg-transparent py-3 text-sm text-white placeholder-slate-500 focus:outline-none">
+                        <button onclick="searchByPhone()" class="w-11 h-11 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
+                            <span class="material-symbols-filled text-lg">search</span>
+                        </button>
+                    </div>
+                    <div id="phone-search-results" class="text-xs text-slate-500 p-1">市外局番から番号を入力してください</div>
+                    <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline">← カテゴリ選択に戻る</button>
+                </div>
+            `;
+            openCustomModal('電話番号で探す', body, { fullscreen: true });
+        }
+
+        function searchByPhone() {
+            playBeep();
+            const raw = document.getElementById('phone-input').value.replace(/[^0-9]/g, '');
+            const box = document.getElementById('phone-search-results');
+            const hit = PHONE_DIRECTORY.find(p => p.phone === raw);
+            if (hit) {
+                box.innerHTML = `
+                    <button onclick="closeModal(); setQuickDestination('${escJs(hit.name)}', ${hit.lat}, ${hit.lon})" class="w-full p-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left flex items-center justify-between">
+                        <div>
+                            <div class="font-bold text-sm text-white">${hit.name}</div>
+                            <div class="text-[10px] text-cyan-400 mt-0.5">タップして目的地に設定</div>
+                        </div>
+                        <span class="material-symbols-filled text-slate-500">chevron_right</span>
+                    </button>
+                `;
+            } else {
+                box.innerHTML = '<div class="text-xs text-red-400 p-2">該当する情報が見つかりませんでした</div>';
+            }
+        }
+
+        function openCoordsSearchScreen() {
+            playBeep();
+            activeDestScreen = 'coords';
+            const body = `
+                <div class="space-y-3">
+                    <div class="grid grid-cols-2 gap-2">
+                        <input id="coord-lat-input" type="text" inputmode="decimal" placeholder="緯度 例: 35.6586" class="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-red-400">
+                        <input id="coord-lon-input" type="text" inputmode="decimal" placeholder="経度 例: 139.7454" class="bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-red-400">
+                    </div>
+                    <button onclick="searchByCoords()" class="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm flex items-center justify-center gap-1.5">
+                        <span class="material-symbols-filled text-lg">search</span> この座標を目的地に設定
+                    </button>
+                    <div id="coord-search-results" class="text-xs text-red-400"></div>
+                    <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline">← カテゴリ選択に戻る</button>
+                </div>
+            `;
+            openCustomModal('緯度経度で指定', body, { fullscreen: true });
+        }
+
+        function searchByCoords() {
+            playBeep();
+            const lat = parseFloat(document.getElementById('coord-lat-input').value);
+            const lon = parseFloat(document.getElementById('coord-lon-input').value);
+            const box = document.getElementById('coord-search-results');
+            if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                box.innerText = '有効な緯度・経度を入力してください';
+                return;
+            }
+            closeModal();
+            setQuickDestination(`地点(${lat.toFixed(4)}, ${lon.toFixed(4)})`, lat, lon);
+        }
+
+        function openMemoryPointsScreen() {
+            playBeep();
+            activeDestScreen = 'memory';
+            const { favHtml } = renderFavoritesAndHistory();
+            const body = `
+                <div class="space-y-3">
+                    <div class="space-y-1.5">${favHtml}</div>
+                    <button onclick="addCurrentAsMemoryPoint()" class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-dashed border-slate-600 text-slate-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                        <span class="material-symbols-filled text-sm">add_location_alt</span> 現在地をメモリ地点に追加
+                    </button>
+                    <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline">← カテゴリ選択に戻る</button>
+                </div>
+            `;
+            openCustomModal('メモリ地点', body, { fullscreen: true });
+        }
+
+        function addCurrentAsMemoryPoint() {
+            const [lat, lon] = currentPos;
+            const name = `地点(${lat.toFixed(3)}, ${lon.toFixed(3)})`;
+            addFavorite(name, lat, lon);
+        }
+
+        function openHistoryScreen() {
+            playBeep();
+            activeDestScreen = 'history';
+            const { histHtml } = renderFavoritesAndHistory();
+            const body = `
+                <div class="space-y-2">${histHtml}</div>
+                <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline mt-4">← カテゴリ選択に戻る</button>
+            `;
+            openCustomModal('履歴', body, { fullscreen: true });
+        }
+
+        function assignMemorySlot(i) {
+            playBeep();
+            pendingMemorySlotIndex = i;
+            openAddressSearchScreen(`特別メモリ ${i + 1} に登録`, '登録する地点名・住所で検索');
+        }
+
+        function useMemorySlot(i) {
+            const slot = memorySlots[i];
+            if (!slot) return;
+            playBeep();
+            closeModal();
+            setQuickDestination(slot.name, slot.lat, slot.lon);
+        }
+
+        function handleHomeRegisterTap() {
+            playBeep();
+            if (homeLocation) {
+                closeModal();
+                setQuickDestination(homeLocation.name || '自宅', homeLocation.lat, homeLocation.lon);
+                return;
+            }
+            const body = `
+                <div class="space-y-4 text-center py-2">
+                    <span class="material-symbols-filled text-4xl text-emerald-400">home</span>
+                    <div class="text-sm font-bold text-white">現在地を自宅として登録しますか？</div>
+                    <div class="text-xs text-slate-400">登録すると次回から「自宅」ボタンで一発案内できます。</div>
+                    <div class="flex gap-2 justify-center pt-2">
+                        <button onclick="confirmRegisterHome()" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm">現在地を登録</button>
+                        <button onclick="openDestinationCategoryMenu()" class="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-sm">キャンセル</button>
+                    </div>
+                </div>
+            `;
+            openCustomModal('自宅登録', body);
+        }
+
+        function confirmRegisterHome() {
+            playBeep();
+            const [lat, lon] = currentPos;
+            homeLocation = { name: '自宅', lat, lon };
+            speakGuidance('現在地を自宅として登録しました。');
+            openDestinationCategoryMenu();
+        }
+
+        // NEW: the previous free-text search screen (出発地/経由地/目的地 + AI route mode +
+        // favorites/history) is kept intact and now reachable both via the 名称 category and
+        // as a dedicated "full AI route search" shortcut from the new front menu.
+        function openFullRouteSearchModal() { openDestinationModal(); }
 
         function renderFavoritesAndHistory() {
             const favHtml = favoriteDestinations.map(f => `
@@ -1566,18 +2157,18 @@
             return { favHtml, histHtml };
         }
 
-        // NEW: this is now the "名称"/"住所" search screen (with the full search fields, AI route
-        // mode, favorites and history) — reached FROM the category front screen below, instead of
-        // being the first thing shown. presetQuery pre-fills the destination field (used by 住所).
-        function openDestinationSearchFields(presetQuery = '') {
+        function openDestinationModal() {
             playBeep();
+            activeDestScreen = 'name';
             const { favHtml, histHtml } = renderFavoritesAndHistory();
+            // NEW: now opened as a fullscreen modal (see openCustomModal's fullscreen option),
+            // so the layout is reorganized into two columns on wider screens instead of one long
+            // vertically-stacked column — search fields on the left, favorites/history/quick
+            // destinations on the right, both visible without scrolling past the fold.
             const body = `
                 <div class="sm:grid sm:grid-cols-[1.3fr_1fr] sm:gap-5 sm:items-start">
                     <div class="space-y-4">
-                        <button onclick="openDestinationModal()" class="text-[11px] text-slate-400 hover:text-white flex items-center gap-1 -mt-1">
-                            <span class="material-symbols-filled text-sm">arrow_back</span> カテゴリ選択に戻る
-                        </button>
+                        <button onclick="openDestinationCategoryMenu()" class="text-xs text-slate-400 hover:text-white underline">← カテゴリ選択に戻る</button>
                         <!-- M3 filled text fields: 出発地 / 経由地 / 目的地 -->
                         <div class="space-y-3">
                             <div class="flex items-center gap-2">
@@ -1616,7 +2207,7 @@
                                     <label class="block text-[11px] font-bold tracking-wide text-red-400 mb-1 ml-1">目的地</label>
                                     <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-red-400 transition">
                                         <span class="material-symbols-filled text-red-400 text-lg">location_on</span>
-                                        <input id="dest-input" type="text" placeholder="例: 東京タワー, 横浜赤レンガ倉庫" value="${presetQuery}" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
+                                        <input id="dest-input" type="text" placeholder="例: 東京タワー, 横浜赤レンガ倉庫" class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none">
                                         <button onclick="searchLocation('dest')" class="w-11 h-11 shrink-0 rounded-full bg-red-600 hover:bg-red-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
                                             <span class="material-symbols-filled text-lg">search</span>
                                         </button>
@@ -1683,176 +2274,6 @@
             `;
             openCustomModal('目的地＆AI経路探索', body, { fullscreen: true });
         }
-
-        // NEW: genre (POI category) search screen — reuses the existing Overpass-based
-        // openNearbyPOI() with a wider set of categories, styled as a grid like the "ジャンル" entry
-        // on a real car nav's destination screen.
-        function openGenreSearchModal() {
-            playBeep();
-            const genres = [
-                { type: 'convenience', label: 'コンビニ', icon: 'storefront' },
-                { type: 'gas_station', label: 'ガソリンスタンド', icon: 'local_gas_station' },
-                { type: 'ev_charge', label: 'EV充電スポット', icon: 'ev_station' },
-                { type: 'parking', label: '駐車場', icon: 'local_parking' },
-                { type: 'restaurant', label: '飲食店', icon: 'restaurant' },
-                { type: 'cafe', label: 'カフェ', icon: 'local_cafe' },
-                { type: 'hospital', label: '病院', icon: 'local_hospital' },
-                { type: 'atm', label: 'ATM・銀行', icon: 'local_atm' },
-                { type: 'toilets', label: 'トイレ', icon: 'wc' }
-            ];
-            const body = `
-                <div class="grid grid-cols-3 gap-2.5">
-                    ${genres.map(g => `
-                        <button onclick="closeModal(); openNearbyPOI('${g.type}')" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-1.5">
-                            <span class="material-symbols-filled text-2xl text-cyan-400">${g.icon}</span>
-                            <span class="text-[10px] font-bold text-white text-center">${g.label}</span>
-                        </button>
-                    `).join('')}
-                </div>
-            `;
-            openCustomModal('ジャンルで探す', body);
-        }
-
-        let homeLocation = null; // NEW: { name, lat, lon } — session only
-        let settingHomeMode = false;
-
-        function openSetHomeModal() {
-            playBeep();
-            if (homeLocation) {
-                openCustomModal('自宅', `
-                    <div class="space-y-3">
-                        <div class="bg-slate-800 border border-slate-700 rounded-xl p-3">
-                            <div class="text-xs font-bold text-white">${homeLocation.name}</div>
-                        </div>
-                        <button onclick="closeModal(); setQuickDestination(homeLocation.name, homeLocation.lat, homeLocation.lon)" class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold">この場所までナビ開始</button>
-                        <button onclick="homeLocation=null; openSetHomeModal();" class="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-bold">自宅登録を解除</button>
-                    </div>
-                `);
-                return;
-            }
-            settingHomeMode = true;
-            openCustomModal('自宅登録', `
-                <div class="text-xs text-slate-400 mb-3">住所や場所の名前で検索して、自宅として登録する場所を選んでください。</div>
-                <div class="flex items-center gap-2 bg-slate-800 rounded-2xl pl-4 pr-2 py-1 border border-slate-700 focus-within:border-emerald-400 transition mb-2">
-                    <span class="material-symbols-filled text-emerald-400 text-lg">home</span>
-                    <input id="home-search-input" type="text" placeholder="例: 東京都新宿区..." class="flex-1 bg-transparent py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none" onkeydown="if(event.key==='Enter') searchHomeLocation()">
-                    <button onclick="searchHomeLocation()" class="w-11 h-11 shrink-0 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition flex items-center justify-center text-white shadow" title="検索">
-                        <span class="material-symbols-filled text-lg">search</span>
-                    </button>
-                </div>
-                <div id="home-search-results" class="space-y-2"></div>
-            `);
-        }
-
-        async function searchHomeLocation() {
-            const input = document.getElementById('home-search-input');
-            const query = (input && input.value || '').trim();
-            const resultsEl = document.getElementById('home-search-results');
-            if (!query || !resultsEl) return;
-            resultsEl.innerHTML = '<div class="text-xs text-slate-500 p-2">検索中...</div>';
-            try {
-                const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&accept-language=ja`);
-                const results = await res.json();
-                if (!results.length) {
-                    resultsEl.innerHTML = '<div class="text-xs text-slate-500 p-2">見つかりませんでした。</div>';
-                    return;
-                }
-                resultsEl.innerHTML = results.map(r => `
-                    <button onclick='setHomeLocation(${JSON.stringify(r.display_name)}, ${r.lat}, ${r.lon})' class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left text-xs text-white">
-                        ${r.display_name}
-                    </button>
-                `).join('');
-            } catch (err) {
-                resultsEl.innerHTML = '<div class="text-xs text-red-400 p-2">検索に失敗しました。</div>';
-            }
-        }
-
-        function setHomeLocation(name, lat, lon) {
-            playBeep();
-            homeLocation = { name, lat: parseFloat(lat), lon: parseFloat(lon) };
-            settingHomeMode = false;
-            closeModal();
-            speakGuidance('自宅を登録しました。');
-        }
-
-        // NEW: category front screen — replaces what used to be the first (and only) destination
-        // screen, matching a real car nav's "目的地" entry menu: search categories at top, then
-        // 特別メモリ (quick-dial favorite slots) and 履歴/自宅登録 below.
-        function openDestinationModal() {
-            playBeep();
-            const categories = [
-                { label: 'ジャンル', icon: 'category', action: "openGenreSearchModal()" },
-                { label: '電話番号', icon: 'call', action: "openPhoneSearchModal()" },
-                { label: '住所', icon: 'home_pin', action: "openDestinationSearchFields()" },
-                { label: 'メモリ地点', icon: 'bookmark', action: "openMemoryPointsModal()" },
-                { label: '名称', icon: 'text_fields', action: "openDestinationSearchFields()" }
-            ];
-            const memorySlots = Array.from({ length: 5 }, (_, i) => favoriteDestinations[i] || null);
-
-            const body = `
-                <div class="space-y-5">
-                    <div class="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
-                        ${categories.map(c => `
-                            <button onclick="${c.action}" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex flex-col items-center gap-1.5">
-                                <span class="material-symbols-filled text-2xl text-cyan-400">${c.icon}</span>
-                                <span class="text-[10px] font-bold text-white">${c.label}</span>
-                            </button>
-                        `).join('')}
-                    </div>
-
-                    <div>
-                        <div class="text-[11px] font-bold text-slate-400 mb-2">特別メモリ</div>
-                        <div class="grid grid-cols-5 gap-2">
-                            ${memorySlots.map((s, i) => s
-            ? `<button onclick="setQuickDestination('${s.name.replace(/'/g, "\\'")}', ${s.lat}, ${s.lon})" class="aspect-square rounded-2xl bg-blue-900/60 border border-blue-500 flex flex-col items-center justify-center gap-0.5 p-1">
-                                    <span class="text-sm font-black text-white">${i + 1}</span>
-                                    <span class="text-[8px] text-blue-200 truncate max-w-full px-0.5">${s.name}</span>
-                                   </button>`
-            : `<button onclick="openDestinationSearchFields()" class="aspect-square rounded-2xl bg-slate-800/60 border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-600">
-                                    <span class="text-sm font-black">${i + 1}</span>
-                                   </button>`
-        ).join('')}
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-2 gap-2.5">
-                        <button onclick="openHistoryModal()" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center gap-2">
-                            <span class="material-symbols-filled text-xl text-slate-300">history</span>
-                            <span class="text-xs font-bold text-white">履歴</span>
-                        </button>
-                        <button onclick="openSetHomeModal()" class="p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center gap-2">
-                            <span class="material-symbols-filled text-xl ${homeLocation ? 'text-amber-400' : 'text-slate-300'}">home</span>
-                            <span class="text-xs font-bold text-white truncate">${homeLocation ? homeLocation.name : '自宅登録'}</span>
-                        </button>
-                    </div>
-                </div>
-            `;
-            openCustomModal('目的地', body);
-        }
-
-        function openPhoneSearchModal() {
-            playBeep();
-            openCustomModal('電話番号で探す', `
-                <div class="text-xs text-slate-400 leading-relaxed p-1">
-                    このアプリでは電話番号データベースを利用できないため、電話番号での検索は未対応です。<br><br>
-                    お手数ですが「名称」または「住所」から検索してください。
-                </div>
-                <button onclick="openDestinationSearchFields()" class="w-full mt-3 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold">名称で検索する</button>
-            `);
-        }
-
-        function openMemoryPointsModal() {
-            playBeep();
-            const { favHtml } = renderFavoritesAndHistory();
-            openCustomModal('メモリ地点', `<div class="space-y-1.5">${favHtml}</div>`);
-        }
-
-        function openHistoryModal() {
-            playBeep();
-            const { histHtml } = renderFavoritesAndHistory();
-            openCustomModal('履歴', `<div class="space-y-1.5">${histHtml}</div>`);
-        }
-
 
         let selectedRouteMode = 'AI推奨';
         function selectRouteType(mode, btn) {
@@ -1933,6 +2354,18 @@
                 document.getElementById('via-input').value = name;
                 document.getElementById('via-search-results').innerHTML = `<div class="text-[10px] text-amber-400 font-bold p-1">✓ 経由地に設定: ${name}</div>`;
             } else {
+                // NEW: if this search was launched to fill a 特別メモリ slot (see
+                // assignMemorySlot), save the result there instead of routing immediately —
+                // matching a real memory-point registration, which just saves the spot.
+                if (pendingMemorySlotIndex !== null) {
+                    const savedNo = pendingMemorySlotIndex + 1;
+                    memorySlots[pendingMemorySlotIndex] = { name, lat, lon };
+                    pendingMemorySlotIndex = null;
+                    speakGuidance(`特別メモリ${savedNo}に${name}を登録しました。`);
+                    closeModal();
+                    openDestinationCategoryMenu();
+                    return;
+                }
                 destinationPos = [lat, lon];
                 currentDestName = name;
                 recentDestinations = recentDestinations.filter(h => h.name !== name);
@@ -2025,14 +2458,13 @@
                 // between them instead of a straight chord.
                 simCoords = densifyRouteCoords(route.geometry.coordinates.map(c => [c[1], c[0]]));
                 simSteps = route.legs.flatMap(leg => leg.steps); // flatten all legs (origin→via, via→dest)
-                currentDestinationName = destName;
-                simAvgSpeedMps = route.duration > 0 ? (route.distance / route.duration) : 15;
                 buildRouteDistanceTables();
                 simTraveledM = 0;
                 simCurrentSpeedMps = 0;
                 simLastFrameTime = null;
                 lastAnnouncedStepIdx = { far: -1, mid: -1, near: -1, now: -1 };
                 lastLongStraightAnnounceIdx = -1;
+                jctListManuallyHidden = false;
                 Object.keys(jctLandmarkCache).forEach(k => delete jctLandmarkCache[k]);
 
                 if (routePolyline) map.removeLayer(routePolyline);
@@ -2938,13 +3370,12 @@
                 restaurant: 'amenity=restaurant',
                 cafe: 'amenity=cafe',
                 hospital: 'amenity=hospital',
-                atm: 'amenity=atm',
-                toilets: 'amenity=toilets'
+                hotel: 'tourism=hotel',
+                attraction: 'tourism=attraction'
             };
             const labelMap = {
-                convenience: '周辺コンビニ', gas_station: 'ガソリンスタンド', ev_charge: 'EV充電スポット',
-                parking: '周辺駐車場', restaurant: '周辺飲食店', cafe: '周辺カフェ',
-                hospital: '周辺病院', atm: 'ATM・銀行', toilets: 'トイレ'
+                convenience: '周辺コンビニ', gas_station: 'ガソリンスタンド', ev_charge: 'EV充電スポット', parking: '周辺駐車場',
+                restaurant: '周辺飲食店', cafe: '周辺カフェ', hospital: '周辺病院', hotel: '周辺ホテル', attraction: '周辺観光地'
             };
             const label = labelMap[type] || '周辺スポット';
             const tagQuery = OVERPASS_TAGS[type] || OVERPASS_TAGS.convenience;
@@ -2988,158 +3419,8 @@
 
         function recalculateRoute() {
             playBeep();
-            if (destinationPos) calculateAndDrawRoute(currentDestinationName);
-            else openDestinationModal();
-        }
-
-        /* ====================================================================
-           JCT / IC 通過リスト — 純正ナビの「この先の分岐(IC/JCT)一覧」画面を再現。
-           simSteps (OSRM step list) から、IC/JCT/ラウンドアバウト/到着など「意味のある」
-           分岐だけを抜き出し、現在地からの距離とおおよそのETAを添えて表示する。
-           ==================================================================== */
-        function getUpcomingJunctionEvents(limit = 8) {
-            if (!simSteps.length || !simStepCumDistM.length) return [];
-            let idx = 0;
-            while (idx < simStepCumDistM.length - 2 && simStepCumDistM[idx + 1] <= simTraveledM) idx++;
-
-            const events = [];
-            for (let i = idx; i < simSteps.length; i++) {
-                const step = simSteps[i];
-                const name = step.name || '';
-                const type = step.maneuver && step.maneuver.type;
-                const isIC = /IC|インターチェンジ/.test(name);
-                const isJCT = /JCT|ジャンクション/.test(name);
-                const isNotable = isIC || isJCT || ['on ramp', 'off ramp', 'merge', 'fork', 'roundabout', 'rotary'].includes(type) || type === 'arrive';
-                if (!isNotable) continue;
-
-                const distM = Math.max(0, simStepCumDistM[i] - simTraveledM);
-                const etaSec = distM / Math.max(1, simAvgSpeedMps);
-                events.push({
-                    tag: type === 'arrive' ? '目的地' : (isIC ? 'IC' : (isJCT ? 'JCT' : '分岐')),
-                    name: name || (type === 'arrive' ? currentDestinationName : '名称不明の分岐'),
-                    distM,
-                    eta: new Date(Date.now() + etaSec * 1000)
-                });
-                if (events.length >= limit) break;
-            }
-            return events;
-        }
-
-        function formatEtaTime(d) {
-            return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-        }
-
-        function formatDistM(distM) {
-            return distM < 1000 ? Math.round(distM) + 'm' : (distM / 1000).toFixed(1) + 'km';
-        }
-
-        function openJctListModal() {
-            playBeep();
-            if (!simSteps.length) {
-                speakGuidance('現在、案内中の経路がありません。');
-                return;
-            }
-            const events = getUpcomingJunctionEvents();
-            const totalRemainM = Math.max(0, (simCumDistM[simCumDistM.length - 1] || 0) - simTraveledM);
-            const etaTotal = new Date(Date.now() + (totalRemainM / Math.max(1, simAvgSpeedMps)) * 1000);
-            const currentRoadName = (simSteps[Math.max(0, simSteps.findIndex((_, i) => simStepCumDistM[i + 1] > simTraveledM))] || {}).name || currentDestinationName;
-
-            const listHtml = events.length
-                ? events.map(e => `
-                    <div class="border border-blue-600 bg-blue-950/50 rounded-lg overflow-hidden flex items-stretch">
-                        <div class="w-14 shrink-0 flex flex-col items-center justify-center gap-0.5 bg-blue-900/70 border-r border-blue-600 py-2">
-                            <span class="text-[9px] font-black text-emerald-300 bg-emerald-950 border border-emerald-500 rounded px-1">${e.tag}</span>
-                        </div>
-                        <div class="flex-1 min-w-0 px-3 py-2 flex items-center justify-between gap-2">
-                            <div class="min-w-0">
-                                <div class="text-sm font-black text-white truncate">${e.name}</div>
-                                <div class="text-[11px] text-cyan-300 digital-font">${formatEtaTime(e.eta)}</div>
-                            </div>
-                            <div class="text-lg font-black text-white digital-font shrink-0">${formatDistM(e.distM)}</div>
-                        </div>
-                    </div>
-                `).join('')
-                : '<div class="text-xs text-slate-500 p-3 text-center">この先、IC/JCT等の目立った分岐はありません。</div>';
-
-            const nextEvent = events[0];
-            const body = `
-                <div class="flex flex-col h-full">
-                    <div class="flex-1 min-h-0 flex gap-3 overflow-hidden">
-                        <!-- Left info box: compass / next-distance / traffic / ETA (純正ナビ風) -->
-                        <div class="w-28 shrink-0 space-y-2 overflow-y-auto">
-                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2 flex flex-col items-center gap-1">
-                                <span id="jct-modal-compass" class="material-symbols-filled text-2xl text-white" style="transform: rotate(${currentHeading}deg)">navigation</span>
-                                <div class="text-[10px] text-slate-400">GPS</div>
-                            </div>
-                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2 text-center">
-                                <div class="text-base font-black text-white digital-font">${nextEvent ? formatDistM(nextEvent.distM) : '--'}</div>
-                                <div class="text-[9px] text-slate-500">次の分岐まで</div>
-                            </div>
-                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2">
-                                <div class="text-[9px] text-slate-500 mb-0.5">交通情報</div>
-                                <div class="text-[10px] text-emerald-400 font-bold">順調</div>
-                            </div>
-                            <div class="bg-slate-900 border border-slate-700 rounded-xl p-2 text-center">
-                                <div class="text-[9px] text-slate-500">到着予想</div>
-                                <div class="text-base font-black text-cyan-300 digital-font">${formatEtaTime(etaTotal)}</div>
-                                <div class="text-[9px] text-slate-500 mt-1">${formatDistM(totalRemainM)}</div>
-                            </div>
-                        </div>
-
-                        <!-- Right: upcoming IC/JCT list -->
-                        <div class="flex-1 min-w-0 space-y-2 overflow-y-auto pr-1">
-                            ${listHtml}
-                        </div>
-                    </div>
-
-                    <!-- Bottom road-name banner -->
-                    <div class="shrink-0 mt-3 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-center text-sm font-bold text-white truncate">
-                        ${currentRoadName}
-                    </div>
-
-                    <!-- Bottom function button row (純正ナビ下部ボタン列を再現) -->
-                    <div class="shrink-0 mt-2 grid grid-cols-4 sm:grid-cols-7 gap-1.5">
-                        <button onclick="openJctDetailModal()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">詳細</button>
-                        <button onclick="closeModal()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">Off</button>
-                        <button onclick="closeModal(); openDestinationModal();" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">目的地</button>
-                        <button onclick="cycleDriveMode()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">表示変更</button>
-                        <button onclick="closeModal(); recalculateRoute();" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">再探索</button>
-                        <button onclick="jctRegisterCurrentDestination()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">地点登録</button>
-                        <button onclick="closeModal(); map.setZoom(Math.max(3, map.getZoom() - 3));" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">広域</button>
-                    </div>
-                </div>
-            `;
-            openCustomModal('この先の分岐 (JCT/IC)', body, { fullscreen: true });
-        }
-
-        // NEW: "詳細" — full step-by-step list (not just IC/JCT), for anyone who wants the whole
-        // turn-by-turn rather than just the highlighted highway events.
-        function openJctDetailModal() {
-            playBeep();
-            let idx = 0;
-            while (idx < simStepCumDistM.length - 2 && simStepCumDistM[idx + 1] <= simTraveledM) idx++;
-            const rows = simSteps.slice(idx).map((step, i) => {
-                const realIdx = idx + i;
-                const distM = Math.max(0, simStepCumDistM[realIdx] - simTraveledM);
-                return `
-                    <div class="flex items-center justify-between gap-2 border-b border-slate-800 py-2 px-1">
-                        <div class="text-xs font-bold text-white truncate">${step.name || maneuverToText(step)}</div>
-                        <div class="text-[11px] text-cyan-300 digital-font shrink-0">${formatDistM(distM)}</div>
-                    </div>
-                `;
-            }).join('') || '<div class="text-xs text-slate-500 p-3">案内中の経路がありません。</div>';
-            openCustomModal('詳細ルート案内', `<div class="max-h-full overflow-y-auto">${rows}</div>`);
-        }
-
-        function jctRegisterCurrentDestination() {
-            playBeep();
-            if (!destinationPos) {
-                speakGuidance('目的地が設定されていません。');
-                return;
-            }
-            addFavorite(currentDestinationName, destinationPos[0], destinationPos[1]);
-            closeModal();
-            speakGuidance(`${currentDestinationName}をお気に入りに登録しました。`);
+            if (destinationPos) calculateAndDrawRoute();
+            else openDestinationCategoryMenu();
         }
 
         function toggleSplitScreen() {
