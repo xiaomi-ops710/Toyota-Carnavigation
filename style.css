@@ -2720,6 +2720,13 @@ video {
             border-left: 1px solid #1e2636;
         }
 
+        /* NEW: bright daytime sky behind the 3D junction canvas — the Three.js renderer is
+           transparent (alpha) so this gradient shows through it, replacing the old flat dark
+           bg-slate-950 backdrop the 3D scene used to sit on. */
+        .jct-sky-gradient {
+            background: linear-gradient(180deg, #6fb6ec 0%, #9ed3f2 40%, #d7ecf3 75%, #eaf4e6 100%);
+        }
+
         /* UI Animations */
         @keyframes fadeIn {
             from { opacity: 0; transform: scale(0.98); }
