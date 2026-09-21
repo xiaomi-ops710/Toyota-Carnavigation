@@ -2715,6 +2715,123 @@ video {
         }
 
         /* Climate Control Direct Toyota Match */
+        /* ====================================================================
+           MATERIAL 3 — Switch & Checkbox components
+           Replaces plain native checkboxes (which just showed the browser's own generic
+           OS checkbox via `accent-color`) with real Material 3 controls: a pill-shaped
+           track + sliding thumb for on/off toggles (per M3, binary settings that take
+           effect immediately are "Switches", not "Checkboxes"), and a proper square M3
+           checkbox for anywhere a true multi-select checkbox is needed. Colorful accents
+           are kept via the .m3-blue / .m3-red / .m3-emerald / .m3-amber modifier classes
+           rather than flattening everything to one brand color.
+           ==================================================================== */
+        input[type="checkbox"].m3-switch {
+            appearance: none;
+            -webkit-appearance: none;
+            position: relative;
+            width: 52px;
+            height: 32px;
+            min-width: 52px;
+            border-radius: 999px;
+            background: #2a2f3a;
+            border: 2px solid #6b7280;
+            cursor: pointer;
+            outline: none;
+            vertical-align: middle;
+            transition: background-color 0.2s cubic-bezier(0.2, 0, 0, 1), border-color 0.2s cubic-bezier(0.2, 0, 0, 1);
+        }
+        input[type="checkbox"].m3-switch::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 6px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #9aa1ae;
+            transform: translate(0, -50%);
+            transition: left 0.2s cubic-bezier(0.2, 0, 0, 1), width 0.15s cubic-bezier(0.2, 0, 0, 1), height 0.15s cubic-bezier(0.2, 0, 0, 1), background-color 0.2s ease;
+        }
+        input[type="checkbox"].m3-switch:active::before {
+            width: 22px;
+            height: 22px;
+        }
+        input[type="checkbox"].m3-switch:checked {
+            border-color: transparent;
+        }
+        input[type="checkbox"].m3-switch:checked::before {
+            left: 24px;
+            width: 24px;
+            height: 24px;
+            background-color: #ffffff;
+        }
+        input[type="checkbox"].m3-switch:checked::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 24px;
+            width: 24px;
+            height: 24px;
+            transform: translate(0, -50%);
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='5 12.5 10 17 19 7'%3E%3C/polyline%3E%3C/svg%3E") center/14px no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='5 12.5 10 17 19 7'%3E%3C/polyline%3E%3C/svg%3E") center/14px no-repeat;
+            background: currentColor;
+        }
+        /* Colorful variants — track fill + matching checkmark tint when ON */
+        input[type="checkbox"].m3-switch.m3-blue:checked { background: #2563eb; color: #2563eb; }
+        input[type="checkbox"].m3-switch.m3-red:checked { background: #dc2626; color: #dc2626; }
+        input[type="checkbox"].m3-switch.m3-emerald:checked { background: #059669; color: #059669; }
+        input[type="checkbox"].m3-switch.m3-amber:checked { background: #d97706; color: #d97706; }
+        input[type="checkbox"].m3-switch:not(.m3-blue):not(.m3-red):not(.m3-emerald):not(.m3-amber):checked {
+            background: #2563eb; color: #2563eb;
+        }
+
+        /* Real M3 checkbox (square, rounded corners, checkmark) — for true multi-select
+           lists, as opposed to the immediate-effect on/off Switches above. */
+        input[type="checkbox"].m3-checkbox {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 22px;
+            height: 22px;
+            min-width: 22px;
+            border-radius: 6px;
+            border: 2px solid #7b8494;
+            background: transparent;
+            cursor: pointer;
+            outline: none;
+            position: relative;
+            transition: background-color 0.15s ease, border-color 0.15s ease;
+        }
+        input[type="checkbox"].m3-checkbox:checked {
+            border-color: transparent;
+            background: #2563eb;
+        }
+        input[type="checkbox"].m3-checkbox.m3-red:checked { background: #dc2626; }
+        input[type="checkbox"].m3-checkbox.m3-emerald:checked { background: #059669; }
+        input[type="checkbox"].m3-checkbox.m3-amber:checked { background: #d97706; }
+        input[type="checkbox"].m3-checkbox:checked::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='5 12.5 10 17 19 7'%3E%3C/polyline%3E%3C/svg%3E") center/15px no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='5 12.5 10 17 19 7'%3E%3C/polyline%3E%3C/svg%3E") center/15px no-repeat;
+            background: #ffffff;
+        }
+
+        /* NEW: Material 3 "state layer" press/hover feedback for real <button> elements —
+           a soft, color-neutral overlay rather than just relying on each button's own
+           hover/active background-color utility class, so every button (whatever its own
+           color) gets the same tactile M3 press feedback. Skips anything that already
+           defines its own more specific active/hover treatment via a data attribute. */
+        button:not(:disabled) {
+            position: relative;
+            transition: transform 0.12s cubic-bezier(0.2, 0, 0, 1), filter 0.12s ease;
+        }
+        button:not(:disabled):active {
+            transform: scale(0.96);
+            filter: brightness(0.94);
+        }
+
         .climate-slider-bg {
             background: linear-gradient(180deg, #131824 0%, #090c12 100%);
             border-left: 1px solid #1e2636;
