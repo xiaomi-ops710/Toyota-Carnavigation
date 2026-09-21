@@ -4,7 +4,49 @@
         // GitHub Pages版: ここに自分のGemini APIキーを直接貼り付けてください
         // (取得先: https://aistudio.google.com/app/apikey)。
         // ⚠️ 静的サイトなので、このキーは誰でもブラウザの「ページのソースを表示」で読めてしまいます。
-        const GEMINI_API_KEY = 'aq.ab8rn6lyqmjghecns6t2jwnpgqmd4jw9yvr5ghs-m9vit31xug';
+        const GEMINI_API_KEY = 'ここにGemini APIキーを貼り付け';
+
+        /* ====================================================================
+           NEW: persisted app settings (localStorage) — Gemini APIキー / 効果音 / 起動
+           アニメーションをアプリ内の「設定」画面から変更できるようにする。
+           BUGFIX: previously the Gemini key could ONLY be set by hand-editing this
+           source file (GEMINI_API_KEY above) and re-deploying — any mistake there (or
+           simply forgetting the running page was still the old deploy) surfaced as a
+           confusing "APIキーがありません" error even though the user believed it was
+           configured correctly. A key entered in Settings now always takes priority.
+           ==================================================================== */
+        const SETTINGS_STORAGE_KEY = 'tconnectAppSettings_v1';
+        let appSettings = {
+            buttonSound: 'default',   // 'default' | 'soft' | 'chime' | 'off'
+            navChime: 'default',      // 'default' | 'soft' | 'chime' | 'off'
+            bootAnimation: 'classic', // 'classic' | 'radial' | 'minimal'
+            geminiApiKey: ''          // user-supplied key, saved from the 設定 screen
+        };
+
+        function loadAppSettings() {
+            try {
+                const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+                if (raw) Object.assign(appSettings, JSON.parse(raw));
+            } catch (e) { /* localStorage unavailable (private mode, etc.) — defaults are fine */ }
+        }
+        loadAppSettings();
+
+        function saveAppSettings() {
+            try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(appSettings)); } catch (e) {}
+        }
+
+        // BUGFIX: the untouched placeholder text in GEMINI_API_KEY above used to be sent to
+        // Google exactly as-is whenever nobody had set a real key in Settings, which comes
+        // back as an "API key not valid" error that reads like a bug rather than "you
+        // haven't set a key yet". Both that placeholder and a Settings key that's just
+        // whitespace are now correctly treated as "not configured".
+        function getActiveGeminiApiKey() {
+            const fromSettings = (appSettings.geminiApiKey || '').trim();
+            if (fromSettings) return fromSettings;
+            const fallback = (GEMINI_API_KEY || '').trim();
+            if (!fallback || fallback === 'ここにGemini APIキーを貼り付け') return '';
+            return fallback;
+        }
         // NOTE: the boot-splash failsafe (uncaught-error handler, auto-hide timer, and the
         // manual "tap to continue" skip-button timer) now lives in a tiny dependency-free
         // <script> at the very top of index.html's <head>, ahead of every external resource,
@@ -251,22 +293,78 @@
             try {
                 initAudio();
                 const now = audioCtx.currentTime;
-                const osc = audioCtx.createOscillator();
-                const gain = audioCtx.createGain();
+                const vol = 0.12 * (volumeLevel / 5);
 
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(type === 'click' ? 880 : 1200, now);
-                gain.gain.setValueAtTime(0.12 * (volumeLevel / 5), now);
-                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
-                osc.connect(gain);
-                gain.connect(audioCtx.destination);
-                osc.start(now);
-                osc.stop(now + 0.04);
+                // Safety-critical alerts (collision/lane-departure/overspeed HUD warnings)
+                // always sound regardless of the button-sound preference below — muting the
+                // *button click* sound shouldn't also silence an actual safety warning.
+                if (type === 'alert') {
+                    playTone(1200, now, 0.05, vol, 'square');
+                    playTone(1200, now + 0.09, 0.05, vol, 'square');
+                    return;
+                }
+
+                // NEW: which sound style plays is now user-configurable in 設定 — see
+                // appSettings.buttonSound (ordinary UI taps) and appSettings.navChime (the
+                // chime that precedes each spoken nav announcement, in speakGuidance below).
+                const style = (type === 'nav') ? appSettings.navChime : appSettings.buttonSound;
+                if (style === 'off') return;
+                if (style === 'soft') {
+                    playTone(523.25, now, 0.09, vol * 0.7, 'sine');
+                } else if (style === 'chime') {
+                    playTone(880, now, 0.05, vol, 'triangle');
+                    playTone(1318.5, now + 0.06, 0.09, vol * 0.8, 'triangle');
+                } else {
+                    playTone(type === 'click' ? 880 : 1200, now, 0.04, vol, 'sine');
+                }
             } catch (e) {}
         }
 
+        // Plays one short synthesized tone — shared by every playBeep() sound style above.
+        function playTone(freq, startTime, duration, vol, wave) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = wave;
+            osc.frequency.setValueAtTime(freq, startTime);
+            gain.gain.setValueAtTime(vol, startTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(startTime);
+            osc.stop(startTime + duration);
+        }
+
+        // BUGFIX/NEW: previously nothing in this app ever adjusted music volume during
+        // spoken guidance at all — any perceived "the music gets quiet while the nav voice
+        // is talking" was purely the browser/OS's own automatic audio-ducking kicking in
+        // when speechSynthesis grabs audio focus, which this page has no control over, and
+        // which can appear to "get stuck" quiet if a new announcement starts before the
+        // previous one's focus was ever released. This makes ducking explicit and reliable
+        // for the two audio sources this page *can* actually control — the internet-radio
+        // and locally-uploaded-MP3 <audio> elements — ducking them to 25% right as guidance
+        // starts and reliably restoring full volume afterward via a token so a rapid string
+        // of announcements can't leave the music stuck quiet.
+        // NOTE: Apple Music here plays inside a cross-origin <iframe> (embed.music.apple.com)
+        // — browsers deliberately block a page's JavaScript from reaching into another
+        // origin's iframe to read or change its audio, so that source's volume genuinely
+        // cannot be touched from here. Any dip on that source specifically is the OS/browser
+        // doing its own ducking, not this app.
+        let speechDuckToken = 0;
+        function duckLocalAudioForSpeech(duck) {
+            [document.getElementById('radio-audio-el'), document.getElementById('local-audio-el')].forEach(el => {
+                if (!el) return;
+                if (duck) {
+                    if (el.dataset.preDuckVolume === undefined) el.dataset.preDuckVolume = String(el.volume);
+                    el.volume = parseFloat(el.dataset.preDuckVolume) * 0.25;
+                } else if (el.dataset.preDuckVolume !== undefined) {
+                    el.volume = parseFloat(el.dataset.preDuckVolume);
+                    delete el.dataset.preDuckVolume;
+                }
+            });
+        }
+
         function speakGuidance(text) {
-            playBeep('click');
+            playBeep('nav');
             if (guidanceOff || volumeLevel === 0) return;
             if ('speechSynthesis' in window) {
                 window.speechSynthesis.cancel();
@@ -274,6 +372,13 @@
                 utterance.lang = 'ja-JP';
                 utterance.rate = 1.05;
                 utterance.volume = Math.min(1, volumeLevel / 5);
+
+                const myToken = ++speechDuckToken;
+                duckLocalAudioForSpeech(true);
+                const release = () => { if (speechDuckToken === myToken) duckLocalAudioForSpeech(false); };
+                utterance.onend = release;
+                utterance.onerror = release;
+
                 window.speechSynthesis.speak(utterance);
             }
         }
@@ -386,9 +491,13 @@
         }
 
         // NEW FEATURE: Toyota-style boot/startup splash animation (replicates factory startup screen)
+        // Style is now user-selectable in 設定 (appSettings.bootAnimation) — see the
+        // matching .boot-style-* CSS rules in style.css.
         function playBootAnimation() {
             const splash = document.getElementById('boot-splash');
             if (!splash) return;
+            splash.classList.remove('boot-style-classic', 'boot-style-radial', 'boot-style-minimal');
+            splash.classList.add('boot-style-' + (appSettings.bootAnimation || 'classic'));
             // restart CSS animations if replayed after first boot
             const logo = document.getElementById('boot-logo');
             const caption = document.getElementById('boot-caution');
@@ -1636,7 +1745,7 @@
             }
             listEl.innerHTML = files.slice().reverse().map(f => `
                 <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl p-2.5">
-                    <button onclick="playLocalMp3(${f.id}, ${JSON.stringify(f.name)})" class="w-9 h-9 shrink-0 rounded-full bg-emerald-700 hover:bg-emerald-600 active:scale-95 transition flex items-center justify-center text-white">
+                    <button onclick="playLocalMp3(${f.id}, '${escJs(f.name)}')" class="w-9 h-9 shrink-0 rounded-full bg-emerald-700 hover:bg-emerald-600 active:scale-95 transition flex items-center justify-center text-white">
                         <span class="material-symbols-filled text-lg">play_arrow</span>
                     </button>
                     <div class="min-w-0 flex-1 text-xs font-bold text-white truncate">${f.name}</div>
@@ -2333,9 +2442,12 @@
         }
 
         // Escapes a string for safe interpolation inside a single-quoted inline
-        // onclick="...('...')" attribute (backslashes and quotes)
+        // onclick="...('...')" attribute (backslashes, single quotes, AND double quotes —
+        // the double-quote escape matters because the onclick attribute itself is always
+        // written with double quotes in this app's templates, so a literal " in the value
+        // would otherwise terminate the HTML attribute early and corrupt the whole tag).
         function escJs(str) {
-            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
         }
 
         const SEARCH_TARGET_STYLE = {
@@ -3136,20 +3248,53 @@
             if (!query) return;
             playBeep();
             const box = document.getElementById('ai-response-box');
+
+            // BUGFIX: previously this always hit Google with GEMINI_API_KEY exactly as
+            // hard-coded in this file — if that was still the untouched placeholder text (or
+            // a source edit never actually reached the deployed copy), the fetch would go
+            // out anyway and come back with Google's own "API key not valid" error, which
+            // reads like an unexplained bug rather than "no key is configured". A key saved
+            // in 設定 is checked FIRST (see getActiveGeminiApiKey), and a clear, actionable
+            // message is shown immediately, with no network round-trip.
+            const apiKey = getActiveGeminiApiKey();
+            if (!apiKey) {
+                box.innerHTML = `
+                    <div class="text-amber-300 leading-relaxed">
+                        Gemini APIキーが設定されていません。<br>
+                        「設定」→「AIアシスタント (Gemini)」欄でご自身のAPIキーを入力・保存してください。<br>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">キーの取得はこちら (Google AI Studio・無料)</a>
+                    </div>
+                `;
+                return;
+            }
+
             box.innerHTML = '<span class="material-symbols-filled fa-spin mr-1">progress_activity</span> 考え中...';
 
-            // Give Gemini some situational context so answers feel like a real car assistant
+            // BUGFIX/NEW: the assistant's own greeting promises it can help with "目的地検索"
+            // (destination search), but previously it only ever produced a spoken-style text
+            // reply with no way to actually act on it — asking it to navigate somewhere just
+            // got a conversational (non-)answer that read as "目的地案内できない". Gemini is
+            // now instructed to flag genuine navigation requests with a "NAVIGATE: <place>"
+            // marker line, which is parsed below and fed into the same real geocoding +
+            // route-calculation flow the destination-search screens use.
             const context = `あなたはトヨタ車のカーナビ・AIアシスタントです。運転中に自然に読み上げられる、簡潔な日本語(2〜3文以内)で答えてください。
 現在地: 緯度${currentPos[0].toFixed(4)}, 経度${currentPos[1].toFixed(4)}
 目的地: ${currentDestName || '未設定'}
 車内温度設定: 運転席${driverTemp}°C
+
+もしユーザーの質問が「〜へ案内して」「〜に行きたい」「〜まで連れて行って」のような、具体的な場所への
+道案内・ルート設定の依頼であれば、回答の1行目を必ず次の形式にしてください（他の文章は一切含めない）:
+NAVIGATE: <場所の名前>
+そうでない通常の質問には、この形式は使わず普通に回答してください。
+
 質問: ${query}`;
 
             // GitHub Pages版: サーバーがいないのでブラウザから直接Gemini APIを叩く。
-            // ⚠️ script.js 内の GEMINI_API_KEY はブラウザに丸見え(誰でもソースから読める)になります。
+            // ⚠️ 設定画面で保存したGemini APIキーは、このブラウザのlocalStorageに平文で
+            // 保存され、ソースからも(そのブラウザ内では)読める状態になります。
             // 個人の学習・文化祭用途などキーが漏れても実害が小さい前提での簡易実装です。
             // 本気で守りたい場合は Cloudflare Workers 等の無料サーバーレスプロキシを別途挟んでください。
-            fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + GEMINI_API_KEY, {
+            fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -3166,14 +3311,55 @@
                     const text = json.candidates && json.candidates[0] && json.candidates[0].content &&
                         json.candidates[0].content.parts && json.candidates[0].content.parts[0] &&
                         json.candidates[0].content.parts[0].text;
-                    box.innerText = text || '応答を取得できませんでした。';
-                    if (text) speakGuidance(text);
+                    if (!text) {
+                        box.innerText = '応答を取得できませんでした。';
+                        return;
+                    }
+
+                    const navMatch = text.match(/^NAVIGATE:\s*(.+?)\s*$/m);
+                    if (navMatch) {
+                        handleAiNavigationRequest(navMatch[1], box);
+                        return;
+                    }
+
+                    box.innerText = text;
+                    speakGuidance(text);
                 })
                 .catch(err => {
                     box.innerText = 'エラー: AIサーバーに接続できませんでした。(' + (err && err.message ? err.message : err) + ')';
                 });
 
             input.value = '';
+        }
+
+        // NEW: turns an AI-recognized navigation request into a real route, reusing the
+        // same Nominatim geocoding already used everywhere else in destination search.
+        function handleAiNavigationRequest(placeQuery, box) {
+            box.innerHTML = `<span class="material-symbols-filled fa-spin mr-1">progress_activity</span> ${placeQuery}を検索中...`;
+            const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(placeQuery)}&countrycodes=jp&addressdetails=1&limit=1`;
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data || data.length === 0) {
+                        box.innerHTML = `<div class="text-red-400">「${placeQuery}」の場所が見つかりませんでした。目的地検索から住所や名称でお試しください。</div>`;
+                        speakGuidance(`すみません、${placeQuery}が見つかりませんでした。`);
+                        return;
+                    }
+                    const item = data[0];
+                    const name = item.display_name.split(',')[0].trim();
+                    const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
+                    box.innerHTML = `<div class="text-emerald-300 font-bold">✓ ${name} を目的地に設定しました。</div>`;
+                    destinationPos = [lat, lon];
+                    currentDestName = name;
+                    recentDestinations = recentDestinations.filter(h => h.name !== name);
+                    recentDestinations.unshift({ name, lat, lon });
+                    if (recentDestinations.length > 8) recentDestinations.length = 8;
+                    closeModal();
+                    startAIRouteCalculationAnimation(name);
+                })
+                .catch(() => {
+                    box.innerHTML = '<div class="text-red-400">場所の検索中に通信エラーが発生しました。</div>';
+                });
         }
 
         // NEW FEATURE: Bluetooth hands-free call history
@@ -3324,6 +3510,13 @@
         function openUserSettings() {
             playBeep();
             closeTConnectMenu();
+            const soundOptions = (current) => `
+                <option value="default" ${current === 'default' ? 'selected' : ''}>標準 (ピッ)</option>
+                <option value="soft" ${current === 'soft' ? 'selected' : ''}>ソフト</option>
+                <option value="chime" ${current === 'chime' ? 'selected' : ''}>チャイム</option>
+                <option value="off" ${current === 'off' ? 'selected' : ''}>オフ</option>
+            `;
+            const hasKey = !!getActiveGeminiApiKey();
             const body = `
                 <div class="space-y-3 text-xs">
                     <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
@@ -3354,16 +3547,107 @@
                                 <button onclick="toggleClimatePanel(false)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-white">非表示</button>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- NEW: sound & startup-animation customization -->
+                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
+                        <div class="font-bold text-cyan-400 text-sm border-b border-slate-800 pb-1">サウンド・起動アニメーション</div>
+                        <div class="flex justify-between items-center py-1">
+                            <span class="font-bold text-white">ボタン操作音</span>
+                            <select onchange="setAppSetting('buttonSound', this.value)" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-white focus:outline-none focus:border-cyan-400">
+                                ${soundOptions(appSettings.buttonSound)}
+                            </select>
+                        </div>
+                        <div class="flex justify-between items-center py-1 border-t border-slate-800">
+                            <span class="font-bold text-white">ナビ音声の効果音</span>
+                            <select onchange="setAppSetting('navChime', this.value)" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-white focus:outline-none focus:border-cyan-400">
+                                ${soundOptions(appSettings.navChime)}
+                            </select>
+                        </div>
                         <div class="flex justify-between items-center py-1 border-t border-slate-800">
                             <span class="font-bold text-white">起動アニメーション</span>
-                            <button onclick="closeModal(); playBootAnimation();" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-cyan-300 flex items-center gap-1">
-                                <span class="material-symbols-filled text-xs">play_arrow</span> 再生
+                            <div class="flex items-center gap-1.5">
+                                <select onchange="setAppSetting('bootAnimation', this.value)" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-white focus:outline-none focus:border-cyan-400">
+                                    <option value="classic" ${appSettings.bootAnimation === 'classic' ? 'selected' : ''}>クラシック</option>
+                                    <option value="radial" ${appSettings.bootAnimation === 'radial' ? 'selected' : ''}>ラジアルグロー</option>
+                                    <option value="minimal" ${appSettings.bootAnimation === 'minimal' ? 'selected' : ''}>ミニマル</option>
+                                </select>
+                                <button onclick="closeModal(); playBootAnimation();" class="px-2 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-bold text-cyan-300 flex items-center gap-1 shrink-0">
+                                    <span class="material-symbols-filled text-xs">play_arrow</span> 再生
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- NEW: Gemini APIキーをアプリ内で設定できるようにする（ソースコード編集不要） -->
+                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
+                        <div class="font-bold text-cyan-400 text-sm border-b border-slate-800 pb-1">AIアシスタント (Gemini)</div>
+                        <div class="text-[10px] text-slate-500 leading-relaxed">
+                            このブラウザだけに保存され、どこにも送信されません。取得は
+                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">Google AI Studio</a> から無料でできます。
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                            <input id="gemini-key-input" type="password" value="${(appSettings.geminiApiKey || '').replace(/"/g, '&quot;')}" placeholder="AIzaSy... を貼り付け" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-2 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400">
+                            <button onclick="toggleGeminiKeyVisibility()" id="gemini-key-toggle-btn" class="w-9 h-9 shrink-0 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center text-slate-300" title="表示/非表示">
+                                <span class="material-symbols-filled text-base">visibility</span>
                             </button>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                            <button onclick="saveGeminiApiKey()" class="flex-1 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-bold text-[11px]">保存</button>
+                            <button onclick="clearGeminiApiKey()" class="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold text-[11px]">削除</button>
+                        </div>
+                        <div id="gemini-key-status" class="text-[10px] font-bold ${hasKey ? 'text-emerald-400' : 'text-amber-400'}">
+                            ${hasKey ? '✓ APIキー設定済み' : '⚠ 未設定 — AIアシスタントを使うには入力してください'}
                         </div>
                     </div>
                 </div>
             `;
             openCustomModal('T-Connect 設定', body);
+        }
+
+        // NEW: applies + persists one of the sound/animation preferences above.
+        function setAppSetting(key, value) {
+            appSettings[key] = value;
+            saveAppSettings();
+            playBeep(key === 'navChime' ? 'nav' : 'click');
+        }
+
+        function toggleGeminiKeyVisibility() {
+            const input = document.getElementById('gemini-key-input');
+            const btn = document.getElementById('gemini-key-toggle-btn');
+            if (!input) return;
+            const showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            const icon = btn && btn.querySelector('span');
+            if (icon) icon.innerText = showing ? 'visibility' : 'visibility_off';
+        }
+
+        function saveGeminiApiKey() {
+            playBeep();
+            const input = document.getElementById('gemini-key-input');
+            appSettings.geminiApiKey = input ? input.value.trim() : '';
+            saveAppSettings();
+            const ok = !!getActiveGeminiApiKey();
+            const status = document.getElementById('gemini-key-status');
+            if (status) {
+                status.className = `text-[10px] font-bold ${ok ? 'text-emerald-400' : 'text-amber-400'}`;
+                status.innerText = ok ? '✓ APIキーを保存しました' : '⚠ 未設定 — AIアシスタントを使うには入力してください';
+            }
+            speakGuidance(ok ? 'Gemini APIキーを保存しました。' : 'Gemini APIキーを削除しました。');
+        }
+
+        function clearGeminiApiKey() {
+            playBeep();
+            appSettings.geminiApiKey = '';
+            saveAppSettings();
+            const input = document.getElementById('gemini-key-input');
+            if (input) input.value = '';
+            const ok = !!getActiveGeminiApiKey();
+            const status = document.getElementById('gemini-key-status');
+            if (status) {
+                status.className = `text-[10px] font-bold ${ok ? 'text-emerald-400' : 'text-amber-400'}`;
+                status.innerText = ok ? '✓ APIキー設定済み' : '⚠ 未設定 — AIアシスタントを使うには入力してください';
+            }
         }
 
         function openDisplayChangeModal() {
