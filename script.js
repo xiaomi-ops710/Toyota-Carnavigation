@@ -3196,23 +3196,134 @@
             }
         }
 
+        /* ====================================================================
+           NEW: Gemini-style chat UI (matches the real Gemini app's look) —
+           - Bottom-left mic button (triggerVoiceAgent) = voice-only entry point: opens the
+             chat and immediately starts listening.
+           - Right-side asteroid/sparkle icon button (openGeminiChat) = text entry point:
+             opens the same chat for typing, without touching the mic.
+           Both share one running conversation (geminiChatHistory) rendered as chat bubbles:
+           user messages as right-aligned bubbles, model replies as plain left-aligned text
+           with a small action-icon row (copy / share / read aloud / thumbs up / thumbs down
+           / more) underneath, plus the standard AI-disclaimer line under the latest reply.
+           ==================================================================== */
+        let geminiChatHistory = []; // {role: 'user'|'model', text, isError}
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
         function triggerVoiceAgent() {
             playBeep();
+            openGeminiChatModal();
+            // 左下のマイクボタンはあくまで音声入力専用の入口 — 開いたら自動で音声認識を開始する
+            setTimeout(() => startVoiceRecognition(), 300);
+        }
+
+        // NEW: the right-side asteroid/sparkle (Gemini) button — text-entry point, opens the
+        // same chat without auto-starting the microphone.
+        function openGeminiChat() {
+            playBeep();
+            openGeminiChatModal();
+            setTimeout(() => { const el = document.getElementById('ai-query-input'); if (el) el.focus(); }, 50);
+        }
+
+        function openGeminiChatModal() {
+            if (geminiChatHistory.length === 0) {
+                geminiChatHistory.push({
+                    role: 'model',
+                    text: 'やあ！こんにちは！\n今日は何か調べたいことや、一緒に進めたい作業とかある？気軽になんでも聞いてね！目的地検索やエアコン設定、周辺情報の質問にもお答えできます。'
+                });
+            }
             const body = `
-                <div class="space-y-3">
-                    <div class="flex items-center gap-2">
-                        <input id="ai-query-input" type="text" placeholder="例: 近くの美味しいラーメン屋は？" class="flex-1 bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-cyan-400" onkeydown="if(event.key==='Enter') submitAiQuery()">
-                        <button onclick="startVoiceRecognition()" id="ai-mic-btn" class="w-10 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center text-cyan-300" title="音声入力">
-                            <span class="material-symbols-filled">mic</span>
+                <div id="gemini-chat-messages" class="space-y-4 pb-1"></div>
+                <div class="sticky bottom-0 -mx-4 sm:-mx-5 -mb-4 sm:-mb-5 px-4 sm:px-5 pt-3 pb-4 sm:pb-5 mt-4 bg-slate-900/95 backdrop-blur border-t border-slate-800">
+                    <div class="flex items-center gap-1.5 bg-slate-800 rounded-full pl-3 pr-1.5 py-1.5 border border-slate-700 focus-within:border-cyan-400 transition">
+                        <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 transition" title="添付(準備中)">
+                            <span class="material-symbols-filled text-lg">add</span>
                         </button>
-                        <button onclick="submitAiQuery()" class="px-4 h-10 rounded-xl bg-blue-600 hover:bg-blue-500 font-bold text-xs text-white">送信</button>
-                    </div>
-                    <div id="ai-response-box" class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-300 min-h-[60px] leading-relaxed">
-                        はい、どのようなご用件でしょうか？目的地検索やエアコン設定、周辺情報の質問にお答えします。
+                        <input id="ai-query-input" type="text" placeholder="Geminiに相談" class="flex-1 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none" onkeydown="if(event.key==='Enter') submitAiQuery()">
+                        <button onclick="startVoiceRecognition()" id="ai-mic-btn" class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition" title="音声入力">
+                            <span class="material-symbols-filled text-lg">mic</span>
+                        </button>
+                        <button onclick="submitAiQuery()" class="w-9 h-9 shrink-0 rounded-full bg-blue-600 hover:bg-blue-500 flex items-center justify-center text-white transition" title="送信">
+                            <span class="material-symbols-filled text-lg">send</span>
+                        </button>
                     </div>
                 </div>
             `;
-            openCustomModal('AIアシスタント (Gemini)', body);
+            openCustomModal('Gemini', body, { fullscreen: true, hideFooter: true });
+            renderGeminiChatMessages();
+        }
+
+        // NEW: renders the running conversation as chat bubbles, matching the real Gemini
+        // app — user turns as right-aligned filled bubbles, model turns as plain text with
+        // an action-icon row (and the standard AI disclaimer under the newest reply only).
+        function renderGeminiChatMessages() {
+            const el = document.getElementById('gemini-chat-messages');
+            if (!el) return;
+            const lastModelIdx = geminiChatHistory.reduce((acc, m, i) => m.role === 'model' ? i : acc, -1);
+
+            el.innerHTML = geminiChatHistory.map((m, i) => {
+                if (m.role === 'user') {
+                    return `
+                        <div class="flex justify-end">
+                            <div class="bg-slate-700 text-white rounded-3xl rounded-br-lg px-4 py-2.5 max-w-[82%] text-sm leading-relaxed whitespace-pre-wrap">${escapeHtml(m.text)}</div>
+                        </div>
+                    `;
+                }
+                return `
+                    <div class="space-y-2">
+                        <div class="text-sm leading-relaxed whitespace-pre-wrap ${m.isError ? 'text-amber-300' : 'text-slate-100'}">${m.html || escapeHtml(m.text)}</div>
+                        ${!m.pending ? `
+                        <div class="flex items-center gap-3 text-slate-500">
+                            <button onclick="copyGeminiMessage(${i})" class="hover:text-white transition" title="コピー"><span class="material-symbols-filled text-[19px]">content_copy</span></button>
+                            <button onclick="shareGeminiMessage(${i})" class="hover:text-white transition" title="共有"><span class="material-symbols-filled text-[19px]">ios_share</span></button>
+                            <button onclick="speakGeminiMessage(${i})" class="hover:text-white transition" title="読み上げ"><span class="material-symbols-filled text-[19px]">volume_up</span></button>
+                            <button onclick="rateGeminiMessage(${i}, true, this)" class="gemini-rate-btn hover:text-white transition" title="高評価"><span class="material-symbols-filled text-[19px]">thumb_up</span></button>
+                            <button onclick="rateGeminiMessage(${i}, false, this)" class="gemini-rate-btn hover:text-white transition" title="低評価"><span class="material-symbols-filled text-[19px]">thumb_down</span></button>
+                            <button class="hover:text-white transition" title="その他"><span class="material-symbols-filled text-[19px]">more_horiz</span></button>
+                        </div>
+                        ${i === lastModelIdx ? '<div class="text-[10px] text-slate-500">Gemini は AI であり、不正確な情報を提示することがあります。</div>' : ''}
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function copyGeminiMessage(i) {
+            playBeep();
+            const msg = geminiChatHistory[i];
+            if (msg && navigator.clipboard) navigator.clipboard.writeText(msg.text).catch(() => {});
+        }
+
+        function shareGeminiMessage(i) {
+            playBeep();
+            const msg = geminiChatHistory[i];
+            if (!msg) return;
+            if (navigator.share) {
+                navigator.share({ text: msg.text }).catch(() => {});
+            } else if (navigator.clipboard) {
+                navigator.clipboard.writeText(msg.text).catch(() => {});
+            }
+        }
+
+        function speakGeminiMessage(i) {
+            const msg = geminiChatHistory[i];
+            if (msg) speakGuidance(msg.text);
+        }
+
+        // Cosmetic feedback only (mirrors the real Gemini app's thumbs up/down) — there's no
+        // backend here to actually send a rating to.
+        function rateGeminiMessage(i, liked, btnEl) {
+            playBeep();
+            const row = btnEl.parentElement;
+            if (!row) return;
+            row.querySelectorAll('.gemini-rate-btn').forEach(b => b.classList.remove('text-cyan-400'));
+            btnEl.classList.add('text-cyan-400');
         }
 
         function startVoiceRecognition() {
@@ -3220,26 +3331,34 @@
             const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
             const micBtn = document.getElementById('ai-mic-btn');
             if (!SR) {
-                document.getElementById('ai-response-box').innerText = 'この環境では音声入力を利用できません。テキストで入力してください。';
+                pushGeminiSystemNote('この環境では音声入力を利用できません。テキストで入力してください。');
                 return;
             }
             try {
                 const recog = new SR();
                 recog.lang = 'ja-JP';
                 recog.interimResults = false;
-                micBtn.classList.add('text-red-400');
+                if (micBtn) micBtn.classList.add('text-red-400');
                 recog.onresult = (e) => {
-                    document.getElementById('ai-query-input').value = e.results[0][0].transcript;
+                    const input = document.getElementById('ai-query-input');
+                    if (input) input.value = e.results[0][0].transcript;
                     submitAiQuery();
                 };
                 recog.onerror = () => {
-                    document.getElementById('ai-response-box').innerText = '音声を認識できませんでした。テキストで入力してください。';
+                    pushGeminiSystemNote('音声を認識できませんでした。テキストで入力してください。');
                 };
-                recog.onend = () => micBtn.classList.remove('text-red-400');
+                recog.onend = () => { if (micBtn) micBtn.classList.remove('text-red-400'); };
                 recog.start();
             } catch (err) {
-                document.getElementById('ai-response-box').innerText = 'この環境(埋め込み画面)ではマイクにアクセスできません。テキストで入力してください。';
+                pushGeminiSystemNote('この環境(埋め込み画面)ではマイクにアクセスできません。テキストで入力してください。');
             }
+        }
+
+        // Adds a plain model-side note to the transcript without going through Gemini
+        // (used for local-only messages: missing mic support, missing API key, etc.)
+        function pushGeminiSystemNote(text, isError = true) {
+            geminiChatHistory.push({ role: 'model', text, isError });
+            renderGeminiChatMessages();
         }
 
         function submitAiQuery() {
@@ -3247,7 +3366,10 @@
             const query = input.value.trim();
             if (!query) return;
             playBeep();
-            const box = document.getElementById('ai-response-box');
+            input.value = '';
+
+            geminiChatHistory.push({ role: 'user', text: query });
+            renderGeminiChatMessages();
 
             // BUGFIX: previously this always hit Google with GEMINI_API_KEY exactly as
             // hard-coded in this file — if that was still the untouched placeholder text (or
@@ -3258,17 +3380,20 @@
             // message is shown immediately, with no network round-trip.
             const apiKey = getActiveGeminiApiKey();
             if (!apiKey) {
-                box.innerHTML = `
-                    <div class="text-amber-300 leading-relaxed">
-                        Gemini APIキーが設定されていません。<br>
-                        「設定」→「AIアシスタント (Gemini)」欄でご自身のAPIキーを入力・保存してください。<br>
-                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">キーの取得はこちら (Google AI Studio・無料)</a>
-                    </div>
-                `;
+                geminiChatHistory.push({
+                    role: 'model',
+                    text: 'Gemini APIキーが設定されていません。「設定」→「AIアシスタント (Gemini)」欄でご自身のAPIキーを入力・保存してください。',
+                    html: 'Gemini APIキーが設定されていません。<br>「設定」→「AIアシスタント (Gemini)」欄でご自身のAPIキーを入力・保存してください。<br>' +
+                        '<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">キーの取得はこちら (Google AI Studio・無料)</a>',
+                    isError: true
+                });
+                renderGeminiChatMessages();
                 return;
             }
 
-            box.innerHTML = '<span class="material-symbols-filled fa-spin mr-1">progress_activity</span> 考え中...';
+            geminiChatHistory.push({ role: 'model', text: '考え中...', pending: true });
+            const pendingIdx = geminiChatHistory.length - 1;
+            renderGeminiChatMessages();
 
             // BUGFIX/NEW: the assistant's own greeting promises it can help with "目的地検索"
             // (destination search), but previously it only ever produced a spoken-style text
@@ -3312,43 +3437,51 @@ NAVIGATE: <場所の名前>
                         json.candidates[0].content.parts && json.candidates[0].content.parts[0] &&
                         json.candidates[0].content.parts[0].text;
                     if (!text) {
-                        box.innerText = '応答を取得できませんでした。';
+                        geminiChatHistory[pendingIdx] = { role: 'model', text: '応答を取得できませんでした。', isError: true };
+                        renderGeminiChatMessages();
                         return;
                     }
 
                     const navMatch = text.match(/^NAVIGATE:\s*(.+?)\s*$/m);
                     if (navMatch) {
-                        handleAiNavigationRequest(navMatch[1], box);
+                        handleAiNavigationRequest(navMatch[1], pendingIdx);
                         return;
                     }
 
-                    box.innerText = text;
+                    geminiChatHistory[pendingIdx] = { role: 'model', text };
+                    renderGeminiChatMessages();
                     speakGuidance(text);
                 })
                 .catch(err => {
-                    box.innerText = 'エラー: AIサーバーに接続できませんでした。(' + (err && err.message ? err.message : err) + ')';
+                    geminiChatHistory[pendingIdx] = {
+                        role: 'model',
+                        text: 'エラー: AIサーバーに接続できませんでした。(' + (err && err.message ? err.message : err) + ')',
+                        isError: true
+                    };
+                    renderGeminiChatMessages();
                 });
-
-            input.value = '';
         }
 
         // NEW: turns an AI-recognized navigation request into a real route, reusing the
         // same Nominatim geocoding already used everywhere else in destination search.
-        function handleAiNavigationRequest(placeQuery, box) {
-            box.innerHTML = `<span class="material-symbols-filled fa-spin mr-1">progress_activity</span> ${placeQuery}を検索中...`;
+        function handleAiNavigationRequest(placeQuery, pendingIdx) {
+            geminiChatHistory[pendingIdx] = { role: 'model', text: `${placeQuery}を検索中...`, pending: true };
+            renderGeminiChatMessages();
             const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(placeQuery)}&countrycodes=jp&addressdetails=1&limit=1`;
             fetch(url)
                 .then(res => res.json())
                 .then(data => {
                     if (!data || data.length === 0) {
-                        box.innerHTML = `<div class="text-red-400">「${placeQuery}」の場所が見つかりませんでした。目的地検索から住所や名称でお試しください。</div>`;
+                        geminiChatHistory[pendingIdx] = { role: 'model', text: `「${placeQuery}」の場所が見つかりませんでした。目的地検索から住所や名称でお試しください。`, isError: true };
+                        renderGeminiChatMessages();
                         speakGuidance(`すみません、${placeQuery}が見つかりませんでした。`);
                         return;
                     }
                     const item = data[0];
                     const name = item.display_name.split(',')[0].trim();
                     const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
-                    box.innerHTML = `<div class="text-emerald-300 font-bold">✓ ${name} を目的地に設定しました。</div>`;
+                    geminiChatHistory[pendingIdx] = { role: 'model', text: `✓ ${name} を目的地に設定しました。` };
+                    renderGeminiChatMessages();
                     destinationPos = [lat, lon];
                     currentDestName = name;
                     recentDestinations = recentDestinations.filter(h => h.name !== name);
@@ -3358,7 +3491,8 @@ NAVIGATE: <場所の名前>
                     startAIRouteCalculationAnimation(name);
                 })
                 .catch(() => {
-                    box.innerHTML = '<div class="text-red-400">場所の検索中に通信エラーが発生しました。</div>';
+                    geminiChatHistory[pendingIdx] = { role: 'model', text: '場所の検索中に通信エラーが発生しました。', isError: true };
+                    renderGeminiChatMessages();
                 });
         }
 
@@ -3666,6 +3800,12 @@ NAVIGATE: <場所の名前>
                         </button>
                     </div>
                     <div class="text-[10px] text-slate-500 px-1">自動切替: 6:00〜17:59は昼間表示、18:00〜5:59は夜間表示に毎分自動で切り替わります。</div>
+                    <!-- NEW: moved here from the right-side hw-strip, which now hosts the
+                         Gemini launcher button instead. -->
+                    <div class="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 mt-1">
+                        <span class="font-bold text-white text-xs">スプリット画面 (地図+情報パネル)</span>
+                        <input type="checkbox" ${splitScreenOpen ? 'checked' : ''} onchange="toggleSplitScreen()" class="m3-switch m3-blue">
+                    </div>
                 </div>
             `;
             openCustomModal('表示テーマ切替', body);
@@ -3757,14 +3897,17 @@ NAVIGATE: <場所の名前>
         function toggleSplitScreen() {
             playBeep();
             splitScreenOpen = !splitScreenOpen;
+            // NEW: this toggle is now also reachable from 表示テーマ切替 (see
+            // openDisplayChangeModal), not only the hw-strip, which has since been
+            // repurposed for the Gemini launcher — so the button may not exist right now.
             const btn = document.getElementById('btn-split-toggle');
             const nav = document.getElementById('dock-nav');
             if (splitScreenOpen) {
-                btn.classList.add('active');
+                if (btn) btn.classList.add('active');
                 if (nav) nav.click();
                 speakGuidance('スプリット画面表示に切り替えました。');
             } else {
-                btn.classList.remove('active');
+                if (btn) btn.classList.remove('active');
                 speakGuidance('全画面表示に切り替えました。');
             }
         }
@@ -3781,6 +3924,10 @@ NAVIGATE: <場所の名前>
             // used to feel cramped/too-tall inside the narrow default card.
             const card = document.getElementById('modal-card');
             if (card) card.classList.toggle('modal-card-fullscreen', !!opts.fullscreen);
+            // NEW: some screens (like the Gemini chat) supply their own sticky bottom input
+            // bar and don't need the modal's default "閉じる" footer bar competing for space.
+            const footer = document.getElementById('modal-footer');
+            if (footer) footer.classList.toggle('hidden', !!opts.hideFooter);
         }
 
         function alertModal(title, message) {
