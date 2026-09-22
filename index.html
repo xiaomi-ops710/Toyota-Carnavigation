@@ -807,8 +807,21 @@
                 <button onclick="getCurrentLocation(true)" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center">
                     <span class="material-symbols-filled text-base text-emerald-400" >my_location</span>
                 </button>
-                <button id="btn-split-toggle" onclick="toggleSplitScreen()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center active" title="スプリット切替">
-                    <span class="material-symbols-filled text-base text-cyan-400" >splitscreen</span>
+                <!-- NEW: was the split-screen toggle ("全画面表示"button) — that control moved
+                     into 表示テーマ切替 (see openDisplayChangeModal), freeing this spot for the
+                     Gemini text-chat launcher. The bottom-left dock mic (triggerVoiceAgent)
+                     stays the dedicated voice-only entry point; this one is for typing. -->
+                <button onclick="openGeminiChat()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="Geminiに質問 (テキスト)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <linearGradient id="geminiHwGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#4285F4"/>
+                                <stop offset="50%" stop-color="#9b72cb"/>
+                                <stop offset="100%" stop-color="#d96570"/>
+                            </linearGradient>
+                        </defs>
+                        <path d="M12 0L14.2 9.8L24 12L14.2 14.2L12 24L9.8 14.2L0 12L9.8 9.8Z" fill="url(#geminiHwGrad)"/>
+                    </svg>
                 </button>
                 <button onclick="openCarPlayAudio('radio')" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="ラジオ">
                     <span class="material-symbols-filled text-base text-red-400">radio</span>
