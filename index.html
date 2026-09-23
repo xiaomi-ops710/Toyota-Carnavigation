@@ -183,15 +183,18 @@
                                 <span id="weather-desc" class="text-[10px] text-slate-400">晴れ</span>
                             </button>
                             
-                            <!-- Drive Mode Badge -->
-                            <button onclick="cycleDriveMode()" id="drive-mode-badge" class="shrink-0 bg-blue-900/80 border border-blue-500 text-cyan-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125">
-                                MODE: NORMAL
-                            </button>
-
-                            <!-- Audio Playing Mini Banner -->
-                            <div onclick="switchDockTab('audio')" class="shrink-0 cursor-pointer flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 px-3 py-0.5 rounded-full text-[11px]">
-                                <span id="mini-audio-icon" class="fa-brands fa-apple text-pink-400"></span>
-                                <span id="top-audio-track" class="text-slate-200 font-bold truncate max-w-[150px]">Apple Music - 再生中</span>
+                            <!-- Audio Playing Mini Banner — NEW: now also has its own play/pause
+                                 button (was icon+name only, tap-to-open-audio-screen). Tapping the
+                                 icon/name still opens the full audio screen; the round button
+                                 controls playback directly without leaving the map. -->
+                            <div class="shrink-0 flex items-center gap-1.5 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 pl-3 pr-1.5 py-0.5 rounded-full text-[11px] transition">
+                                <div onclick="switchDockTab('audio')" class="flex items-center gap-2 cursor-pointer min-w-0">
+                                    <span id="mini-audio-icon" class="fa-brands fa-apple text-pink-400"></span>
+                                    <span id="top-audio-track" class="text-slate-200 font-bold truncate max-w-[120px]">Apple Music - 再生中</span>
+                                </div>
+                                <button onclick="event.stopPropagation(); toggleTopMiniPlayback();" class="shrink-0 w-6 h-6 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-white transition" title="再生/一時停止">
+                                    <span id="top-mini-play-icon" class="material-symbols-filled text-sm">pause</span>
+                                </button>
                             </div>
                         </div>
 
@@ -337,6 +340,37 @@
                                     <span id="current-road-text">東京都道414号線 (四谷角筈線)</span>
                                 </div>
                             </div>
+
+                            <!-- NEW: route preview / 案内開始 confirmation bar — shown once a freshly
+                                 picked destination's route has been calculated and drawn on the map,
+                                 but BEFORE turn-by-turn guidance actually starts. Tapping a search
+                                 result no longer starts driving immediately; the driver reviews the
+                                 route here and explicitly taps 案内開始. See showRoutePreviewBar() /
+                                 confirmStartGuidance() / cancelRoutePreview() in script.js. -->
+                            <div id="route-preview-bar" class="hidden absolute bottom-24 left-1/2 -translate-x-1/2 z-30 w-[92%] max-w-md pointer-events-auto">
+                                <div class="bg-slate-900/95 backdrop-blur border-2 border-cyan-500 rounded-2xl shadow-2xl p-3 flex items-center gap-2.5">
+                                    <div class="flex-1 min-w-0">
+                                        <div id="route-preview-name" class="text-sm font-black text-white truncate">目的地</div>
+                                        <div class="flex items-center gap-1.5 text-[11px] text-slate-300 mt-0.5">
+                                            <span id="route-preview-dist" class="font-bold text-cyan-300 digital-font">-- km</span>
+                                            <span>・</span>
+                                            <span id="route-preview-eta" class="font-bold digital-font">--:-- 到着予定</span>
+                                        </div>
+                                    </div>
+                                    <button onclick="cancelRoutePreview()" class="w-10 h-10 shrink-0 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-center text-slate-300" title="キャンセル">
+                                        <span class="material-symbols-filled text-lg">close</span>
+                                    </button>
+                                    <button onclick="confirmStartGuidance()" class="shrink-0 px-4 h-10 rounded-full bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center gap-1.5 active:scale-95 transition">
+                                        <span class="material-symbols-filled text-lg">navigation</span> 案内開始
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- NEW: lets the driver cancel guidance even while it's actively running
+                                 (previously there was no way short of picking a whole new destination). -->
+                            <button id="btn-stop-guidance" onclick="stopGuidance()" class="hidden absolute bottom-24 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-red-700/95 hover:bg-red-600 backdrop-blur border-2 border-red-400 text-white px-5 py-2 rounded-full text-xs sm:text-sm font-black shadow-2xl flex items-center gap-2 active:scale-95 transition">
+                                <span class="material-symbols-filled text-base">stop_circle</span> 案内を中止
+                            </button>
 
                             <!-- OVERLAY: HIGH-GRAPHICS DYNAMIC 3D REALISTIC JUNCTION VIEW ENGINE -->
                             <div id="junction-3d-container" class="hidden absolute top-0 right-0 bottom-10 w-1/2 z-20 bg-slate-950 border-l-2 border-blue-500 shadow-2xl flex flex-col animate-fade-in">
