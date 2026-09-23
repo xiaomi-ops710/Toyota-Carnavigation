@@ -2831,6 +2831,11 @@ video {
             transform: scale(0.96);
             filter: brightness(0.94);
         }
+        /* NEW: highlights whichever drive-mode button (設定 → 走行モード) is currently active */
+        .drive-mode-opt-active {
+            box-shadow: 0 0 0 2px currentColor inset;
+            filter: brightness(1.2);
+        }
 
         .climate-slider-bg {
             background: linear-gradient(180deg, #131824 0%, #090c12 100%);
