@@ -2856,11 +2856,21 @@ video {
            hidden on the parent (#map-section) cropping it back down to the visible viewport.
            An ID selector is used so this reliably wins over the "inset-0 w-full h-full"
            Tailwind utility classes already on the element in index.html. */
+        /* NEW: base fallback sizing (used only for the instant before sizeRotatableMap()'s JS
+           runs and takes over with exact diagonal-safe pixel dimensions — see script.js).
+           top/left/width/height are then set inline in px, which naturally overrides these. */
+        /* FIXED: a uniform 150%/-25% CSS percentage oversize only fully covers every rotation
+           angle for a perfectly SQUARE viewport (the true requirement is that both the
+           oversized width AND height reach the visible viewport's diagonal length, which for
+           a wide/short viewport like this map area is much more than 150% in the short
+           dimension) — on a typical wide car-display aspect ratio this left the top/bottom
+           edges under-covered, so heading-up rotation revealed blank/unloaded map at the
+           left and right once rotated. Exact pixel sizing is now computed in JS
+           (resizeMapForRotationCoverage in script.js) from the real viewport diagonal and
+           applied as inline styles, which override these fallback defaults.
+           #map is still an absolutely-positioned box, sized via JS. */
         #map {
-            top: -25%;
-            left: -25%;
-            width: 150%;
-            height: 150%;
+            position: absolute;
             transform-origin: 50% 50%;
             transition: transform 0.35s linear;
         }
