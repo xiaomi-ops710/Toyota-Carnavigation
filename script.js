@@ -597,7 +597,32 @@
         function updateMapRotation() {
             const mapEl = document.getElementById('map');
             if (!mapEl) return;
-            mapEl.style.transform = (headingMode === 'heading') ? `rotate(${-currentHeading}deg)` : 'rotate(0deg)';
+            const rotateDeg = (headingMode === 'heading') ? -currentHeading : 0;
+            // NEW: translateX is applied BEFORE rotate in the CSS function list below, which
+            // (per how CSS composes multiple transforms) means it shifts the map in true,
+            // un-rotated SCREEN pixels first — so the car stays correctly shifted into the
+            // visible left half regardless of the current heading-up rotation angle — and
+            // THEN the whole already-shifted result is rotated. Reversing the order would
+            // make the shift rotate along with the map instead of staying screen-horizontal.
+            const offsetPx = getSidebarOffsetPx();
+            mapEl.style.transform = `translateX(${offsetPx}px) rotate(${rotateDeg}deg)`;
+        }
+
+        // NEW: when the 3D junction view or the IC/JCT passing list is showing (both cover
+        // the right half of the map — see #junction-3d-container / #jct-list-panel), the car
+        // marker previously stayed centered on the FULL map width, which put it right at (or
+        // under) the sidebar's left edge, effectively hiding the driver's own position. This
+        // returns how many screen pixels to shift the map content left so the car ends up
+        // centered in the remaining, uncovered left half instead.
+        function getSidebarOffsetPx() {
+            const jctBox = document.getElementById('junction-3d-container');
+            const jctList = document.getElementById('jct-list-panel');
+            const sidebarVisible = (jctBox && !jctBox.classList.contains('hidden')) ||
+                (jctList && !jctList.classList.contains('hidden'));
+            if (!sidebarVisible) return 0;
+            const mapSection = document.getElementById('map-section');
+            if (!mapSection) return 0;
+            return -(mapSection.clientWidth * 0.25);
         }
 
         function toggleHeadingMode() {
@@ -631,6 +656,7 @@
                 if (jctBox) jctBox.classList.add('hidden');
                 speakGuidance('3Dジャンクションガイドをオフにしました。');
             }
+            updateMapRotation();
         }
 
         function cycleSimSpeed() {
@@ -1344,6 +1370,7 @@
             jctListManuallyHidden = true;
             const panel = document.getElementById('jct-list-panel');
             if (panel) panel.classList.add('hidden');
+            updateMapRotation();
         }
 
         // NEW: cache of reverse-geocoded landmark/intersection names near each maneuver point,
@@ -1469,6 +1496,10 @@
                     jctListPanel.classList.add('hidden');
                 }
             }
+
+            // NEW: keep the car's screen-space offset in sync with whatever the sidebar
+            // visibility just became above (see getSidebarOffsetPx / updateMapRotation).
+            updateMapRotation();
         }
 
         /* ====================================================================
@@ -1559,6 +1590,7 @@
                 document.getElementById('app-btn-local').className = 'w-full p-2.5 rounded-xl bg-emerald-950/80 border border-emerald-500 text-left text-xs font-bold text-emerald-200 flex items-center gap-2 shadow';
                 renderLocalMp3List();
             }
+            updateTopMiniPlayIcon();
         }
 
         /* ====================================================================
@@ -1650,8 +1682,8 @@
         function updateRadioPlayButtonIcon() {
             const radioEl = document.getElementById('radio-audio-el');
             const iconEl = document.querySelector('#radio-play-btn .material-symbols-filled');
-            if (!radioEl || !iconEl) return;
-            iconEl.innerText = radioEl.paused ? 'play_arrow' : 'pause';
+            if (radioEl && iconEl) iconEl.innerText = radioEl.paused ? 'play_arrow' : 'pause';
+            updateTopMiniPlayIcon();
         }
 
         /* ====================================================================
@@ -1794,8 +1826,47 @@
         function updateLocalPlayButtonIcon() {
             const el = document.getElementById('local-audio-el');
             const iconEl = document.querySelector('#local-play-btn .material-symbols-filled');
-            if (!el || !iconEl) return;
-            iconEl.innerText = el.paused ? 'play_arrow' : 'pause';
+            if (el && iconEl) iconEl.innerText = el.paused ? 'play_arrow' : 'pause';
+            updateTopMiniPlayIcon();
+        }
+
+        // NEW: the top-bar mini audio banner's own play/pause button — dispatches to whichever
+        // source is actually active. Apple Music plays inside a cross-origin <iframe>
+        // (embed.music.apple.com); browsers deliberately block this page's JavaScript from
+        // reaching into another origin's iframe to control its playback, so that source can't
+        // actually be toggled from here — the button still appears (matching the requested
+        // icon/track-name/play-button layout) but explains the limitation instead of silently
+        // doing nothing.
+        function toggleTopMiniPlayback() {
+            playBeep();
+            if (currentAudioSource === 'radio') {
+                toggleRadioPlayback();
+            } else if (currentAudioSource === 'local') {
+                toggleLocalPlayback();
+            } else {
+                speakGuidance('Apple Musicの再生操作は埋め込みプレイヤー内で行ってください。');
+            }
+            updateTopMiniPlayIcon();
+        }
+
+        function updateTopMiniPlayIcon() {
+            const iconEl = document.getElementById('top-mini-play-icon');
+            if (!iconEl) return;
+            const wrap = iconEl.parentElement;
+            if (currentAudioSource === 'radio') {
+                const el = document.getElementById('radio-audio-el');
+                iconEl.innerText = (el && !el.paused) ? 'pause' : 'play_arrow';
+                if (wrap) wrap.classList.remove('opacity-40');
+            } else if (currentAudioSource === 'local') {
+                const el = document.getElementById('local-audio-el');
+                iconEl.innerText = (el && !el.paused) ? 'pause' : 'play_arrow';
+                if (wrap) wrap.classList.remove('opacity-40');
+            } else {
+                // Apple Music — no real control possible from here (see toggleTopMiniPlayback);
+                // dim the button so it doesn't look like a fully live playback control.
+                iconEl.innerText = 'play_arrow';
+                if (wrap) wrap.classList.add('opacity-40');
+            }
         }
 
         async function deleteLocalMp3(id) {
@@ -2579,8 +2650,16 @@
             openDestinationModal();
         }
 
-        async function calculateAndDrawRoute(destName = '目的地') {
+        async function calculateAndDrawRoute(destName = '目的地', opts = {}) {
             if (!destinationPos) return;
+            // NEW: mid-drive reroutes (recalculateRoute) pass autoStart so the vehicle just
+            // keeps driving on the new route immediately — showing a "案内開始?" confirmation
+            // mid-drive would be strange since guidance is already active. A destination
+            // freshly picked from search, on the other hand, no longer starts moving the
+            // instant you tap it — the route is calculated and drawn as a preview, and actual
+            // turn-by-turn guidance only begins once the driver taps 案内開始 below (see
+            // showRoutePreviewBar / confirmStartGuidance).
+            const autoStart = !!opts.autoStart;
             // NEW: mid-drive reroutes (recalculateRoute) now start from the vehicle's current
             // simulated position on the road, not the original trip's origin — previously a
             // manual "reroute" during a drive would snap back to wherever the trip started from.
@@ -2643,15 +2722,105 @@
                 const simSpeedBadge = document.getElementById('btn-sim-speed');
                 if (simSpeedBadge) simSpeedBadge.classList.remove('hidden');
 
-                speakGuidance(viaPoint
-                    ? `AI探索完了。${viaPointName}経由、${selectedRouteMode}ルートで${destName}までの案内を開始します。`
-                    : `AI探索完了。${selectedRouteMode}ルートで${destName}までの案内を開始します。`);
-                startSmoothDrivingSimulation();
+                if (autoStart) {
+                    beginActiveGuidance(destName);
+                } else {
+                    showRoutePreviewBar(destName, route.distance, route.duration);
+                }
             } catch (err) {
                 // NEW: was previously a silent no-op, indistinguishable from the button doing
                 // nothing at all.
                 speakGuidance('通信エラーにより経路探索に失敗しました。もう一度お試しください。');
             }
+        }
+
+        // NEW: actually starts turn-by-turn guidance (voice + driving simulation) — split out
+        // of calculateAndDrawRoute so a freshly-picked destination can show a route preview
+        // with a 案内開始 button first instead of driving off immediately.
+        function beginActiveGuidance(destName) {
+            speakGuidance(viaPoint
+                ? `AI探索完了。${viaPointName}経由、${selectedRouteMode}ルートで${destName}までの案内を開始します。`
+                : `AI探索完了。${selectedRouteMode}ルートで${destName}までの案内を開始します。`);
+            hideRoutePreviewBar();
+            const stopBtn = document.getElementById('btn-stop-guidance');
+            if (stopBtn) stopBtn.classList.remove('hidden');
+            startSmoothDrivingSimulation();
+        }
+
+        // NEW: floating bottom bar shown once a destination's route has been calculated and
+        // drawn on the map, but before guidance actually starts — lets the driver see the
+        // route + ETA/distance first and confirm, or cancel, instead of guidance beginning
+        // the instant a search result is tapped.
+        let pendingGuidanceDestName = '';
+        function showRoutePreviewBar(destName, distanceM, durationS) {
+            pendingGuidanceDestName = destName;
+            const bar = document.getElementById('route-preview-bar');
+            if (!bar) { beginActiveGuidance(destName); return; } // safety fallback
+            const nameEl = document.getElementById('route-preview-name');
+            const distEl = document.getElementById('route-preview-dist');
+            const etaEl = document.getElementById('route-preview-eta');
+            if (nameEl) nameEl.innerText = destName;
+            if (distEl) distEl.innerText = distanceM >= 1000 ? (distanceM / 1000).toFixed(1) + ' km' : Math.round(distanceM) + ' m';
+            if (etaEl) {
+                const arrival = new Date(Date.now() + durationS * 1000);
+                etaEl.innerText = `${String(arrival.getHours()).padStart(2, '0')}:${String(arrival.getMinutes()).padStart(2, '0')} 到着予定`;
+            }
+            bar.classList.remove('hidden');
+        }
+
+        function hideRoutePreviewBar() {
+            const bar = document.getElementById('route-preview-bar');
+            if (bar) bar.classList.add('hidden');
+        }
+
+        function confirmStartGuidance() {
+            playBeep();
+            beginActiveGuidance(pendingGuidanceDestName || currentDestName || '目的地');
+        }
+
+        // NEW: cancels a route that was only ever previewed (案内開始 never pressed) — clears
+        // the drawn route and destination entirely rather than leaving a route on the map
+        // with no way to get rid of it.
+        function cancelRoutePreview() {
+            playBeep();
+            hideRoutePreviewBar();
+            if (routePolyline) { map.removeLayer(routePolyline); routePolyline = null; }
+            destinationPos = null;
+            currentDestName = '';
+            const banner = document.getElementById('top-route-banner');
+            if (banner) banner.classList.add('hidden');
+            const simSpeedBadge = document.getElementById('btn-sim-speed');
+            if (simSpeedBadge) simSpeedBadge.classList.add('hidden');
+            speakGuidance('目的地の設定を取り消しました。');
+        }
+
+        // NEW: stops guidance even while it's actively running (previously there was no way
+        // to cancel a drive already in progress short of picking an entirely new destination).
+        function stopGuidance() {
+            playBeep();
+            if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+            if (routePolyline) { map.removeLayer(routePolyline); routePolyline = null; }
+            destinationPos = null;
+            currentDestName = '';
+            simCoords = [];
+            simSteps = [];
+            simTraveledM = 0;
+            simCurrentSpeedMps = 0;
+            updateSafetyMonitor(0);
+
+            const banner = document.getElementById('top-route-banner');
+            if (banner) banner.classList.add('hidden');
+            const simSpeedBadge = document.getElementById('btn-sim-speed');
+            if (simSpeedBadge) simSpeedBadge.classList.add('hidden');
+            const jctBox = document.getElementById('junction-3d-container');
+            if (jctBox) jctBox.classList.add('hidden');
+            const jctListPanel = document.getElementById('jct-list-panel');
+            if (jctListPanel) jctListPanel.classList.add('hidden');
+            hideRoutePreviewBar();
+            const stopBtn = document.getElementById('btn-stop-guidance');
+            if (stopBtn) stopBtn.classList.add('hidden');
+            updateMapRotation();
+            speakGuidance('案内を中止しました。');
         }
 
         function startSmoothDrivingSimulation() {
@@ -2664,6 +2833,8 @@
                 if (simTraveledM >= total && total > 0) {
                     speakGuidance('目的地付近に到着しました。');
                     document.getElementById('junction-3d-container').classList.add('hidden');
+                    const stopBtn = document.getElementById('btn-stop-guidance');
+                    if (stopBtn) stopBtn.classList.add('hidden');
                     simCurrentSpeedMps = 0;
                     updateSafetyMonitor(0);
                     return;
@@ -3017,30 +3188,24 @@
         /* ====================================================================
            NEW FEATURE 3: DRIVE MODE SELECT (ECO / NORMAL / SPORT)
            ==================================================================== */
-        function cycleDriveMode() {
+        // NEW: replaces cycleDriveMode() now that the mode switcher lives in 設定 as three
+        // explicit buttons instead of a single top-bar badge you clicked repeatedly to cycle.
+        function setDriveMode(mode) {
             playBeep();
-            const badge = document.getElementById('drive-mode-badge');
+            driveMode = mode;
             const bezel = document.getElementById('toyota-bezel');
-
-            if (driveMode === 'NORMAL') {
-                driveMode = 'SPORT';
-                badge.innerText = 'MODE: SPORT';
-                badge.className = 'bg-red-900/90 border border-red-500 text-red-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125';
-                bezel.classList.add('sport-mode');
+            if (mode === 'SPORT') {
+                if (bezel) bezel.classList.add('sport-mode');
                 speakGuidance('スポーツモードが選択されました。レスポンスを強化します。');
-            } else if (driveMode === 'SPORT') {
-                driveMode = 'ECO';
-                badge.innerText = 'MODE: ECO';
-                badge.className = 'bg-emerald-900/90 border border-emerald-500 text-emerald-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125';
-                bezel.classList.remove('sport-mode');
-                speakGuidance('エコモードが選択されました。環境優先走行を行います。');
             } else {
-                driveMode = 'NORMAL';
-                badge.innerText = 'MODE: NORMAL';
-                badge.className = 'bg-blue-900/80 border border-blue-500 text-cyan-200 text-[10px] font-black px-2 py-0.5 rounded-full shadow hover:brightness-125';
-                bezel.classList.remove('sport-mode');
-                speakGuidance('ノーマルモードに戻りました。');
+                if (bezel) bezel.classList.remove('sport-mode');
+                speakGuidance(mode === 'ECO' ? 'エコモードが選択されました。環境優先走行を行います。' : 'ノーマルモードに戻りました。');
             }
+            // If 設定 is currently open showing the mode picker, refresh which option looks active.
+            ['NORMAL', 'SPORT', 'ECO'].forEach(m => {
+                const btn = document.getElementById('drive-mode-opt-' + m);
+                if (btn) btn.classList.toggle('drive-mode-opt-active', m === mode);
+            });
         }
 
         /* ====================================================================
@@ -3653,6 +3818,23 @@ NAVIGATE: <場所の名前>
             const hasKey = !!getActiveGeminiApiKey();
             const body = `
                 <div class="space-y-3 text-xs">
+                    <!-- NEW: moved here from the top status bar's "MODE: NORMAL" badge, which
+                         was contributing to the top bar getting crowded/overflowing. -->
+                    <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
+                        <div class="font-bold text-cyan-400 text-sm border-b border-slate-800 pb-1">走行モード</div>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button id="drive-mode-opt-NORMAL" onclick="setDriveMode('NORMAL')" class="p-2.5 rounded-xl bg-blue-900/60 border border-blue-500 text-cyan-200 font-black text-xs ${driveMode === 'NORMAL' ? 'drive-mode-opt-active' : ''}">
+                                <span class="material-symbols-filled text-lg block mb-0.5">directions_car</span> NORMAL
+                            </button>
+                            <button id="drive-mode-opt-SPORT" onclick="setDriveMode('SPORT')" class="p-2.5 rounded-xl bg-red-900/60 border border-red-500 text-red-200 font-black text-xs ${driveMode === 'SPORT' ? 'drive-mode-opt-active' : ''}">
+                                <span class="material-symbols-filled text-lg block mb-0.5">bolt</span> SPORT
+                            </button>
+                            <button id="drive-mode-opt-ECO" onclick="setDriveMode('ECO')" class="p-2.5 rounded-xl bg-emerald-900/60 border border-emerald-500 text-emerald-200 font-black text-xs ${driveMode === 'ECO' ? 'drive-mode-opt-active' : ''}">
+                                <span class="material-symbols-filled text-lg block mb-0.5">eco</span> ECO
+                            </button>
+                        </div>
+                    </div>
+
                     <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
                         <div class="font-bold text-cyan-400 text-sm border-b border-slate-800 pb-1">Toyota Safety Sense & 3D表示設定</div>
                         <div class="flex justify-between items-center py-1">
@@ -3890,7 +4072,9 @@ NAVIGATE: <場所の名前>
 
         function recalculateRoute() {
             playBeep();
-            if (destinationPos) calculateAndDrawRoute();
+            // NEW: a mid-drive reroute keeps driving immediately (autoStart) — guidance is
+            // already active, so showing a fresh 案内開始 confirmation here would be strange.
+            if (destinationPos) calculateAndDrawRoute(currentDestName || '目的地', { autoStart: true });
             else openDestinationCategoryMenu();
         }
 
