@@ -444,7 +444,21 @@
                     attributionControl: false
                 });
 
+                // BUGFIX: in ヘディングアップ mode the #map element is CSS-rotated, and its
+                // old fixed 150%/-25% oversize (enough to cover a roughly-square viewport at
+                // 45°) left real black/untiled gaps at the left and right edges on the wider,
+                // landscape-shaped viewport this app actually runs in — the oversized square
+                // just didn't reach the corners. This sizes it to the viewport's own diagonal
+                // instead, which mathematically guarantees full tile coverage at any rotation
+                // angle regardless of aspect ratio, and re-runs whenever the viewport can have
+                // changed size (window resize, split-screen toggle).
+                sizeRotatableMap();
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+                // Re-fit #map's diagonal-safe size whenever the viewport can have changed —
+                // window resize, orientation change, or the split-screen panel opening/closing
+                // (its CSS transition runs ~300ms, hence the small delay on that one).
+                window.addEventListener('resize', sizeRotatableMap);
 
                 // NEW FEATURE: let the driver freely pan/zoom the map during route guidance.
                 // Only a real user drag disengages "follow" mode (map.panTo() from the simulation
@@ -589,6 +603,25 @@
             document.getElementById('scale-text').innerText = scales[z] || '2km';
         }
 
+        // BUGFIX: sizes the (rotatable) #map element to its viewport's own diagonal, centered,
+        // so it fully covers the visible area at ANY rotation angle regardless of aspect ratio
+        // — a plain "150% bigger" oversize left real gaps (shown as black/untiled map) at the
+        // left/right edges once rotated on this app's wide, landscape-shaped map viewport.
+        // Re-run whenever the viewport can have changed size.
+        function sizeRotatableMap() {
+            const section = document.getElementById('map-section');
+            const mapEl = document.getElementById('map');
+            if (!section || !mapEl) return;
+            const w = section.clientWidth, h = section.clientHeight;
+            if (!w || !h) return;
+            const size = Math.ceil(Math.sqrt(w * w + h * h) * 1.05);
+            mapEl.style.width = size + 'px';
+            mapEl.style.height = size + 'px';
+            mapEl.style.left = Math.round((w - size) / 2) + 'px';
+            mapEl.style.top = Math.round((h - size) / 2) + 'px';
+            if (map) map.invalidateSize();
+        }
+
         // NEW: rotates the map itself (see the #map CSS rule) so that in ヘディングアップ mode
         // the current travel direction always points "up" on screen — the car icon's own
         // rotation always equals the true heading (set in animateStep), so combined with this
@@ -701,11 +734,16 @@
 
             try {
                 threeScene = new THREE.Scene();
-                // NEW: bright daytime look (was a dark night-blue scene) — the scene background
-                // is left transparent so the CSS sky gradient on #jct-canvas-parent shows through
-                // the alpha-enabled renderer, and fog is a light, hazy sky-blue instead of near-black
-                // so distant buildings/road fade into the horizon like a real sunny day rather than
-                // into darkness.
+                // FIXED: the scene used to render with a fully transparent (alpha) canvas so
+                // the CSS sky gradient behind it would show through, but the combination of
+                // alpha:true + antialias:true is a known WebGL trouble spot on some
+                // browsers/GPU drivers — any pixel the scene itself never draws to (empty sky
+                // above the horizon) could come back as leftover/uninitialized GPU memory
+                // instead of clean transparency, which is exactly the colorful static/noise
+                // seen in the sky. The renderer is now fully opaque, and the sky gradient is
+                // painted directly into the scene as a real background texture, so every
+                // pixel always has a deterministic color.
+                threeScene.background = createSkyGradientTexture();
                 threeScene.fog = new THREE.FogExp2(0xcfe9f7, 0.0055);
 
                 const width = container.clientWidth || 300;
@@ -714,8 +752,7 @@
                 threeCamera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
                 update3DCameraPosition();
 
-                threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-                threeRenderer.setClearColor(0x000000, 0); // fully transparent clear — CSS sky shows through
+                threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
                 threeRenderer.setSize(width, height);
                 threeRenderer.shadowMap.enabled = true;
                 threeRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -772,6 +809,25 @@
             } catch (err) {
                 console.log("WebGL 3D fallback active:", err);
             }
+        }
+
+        // NEW: a real vertical sky gradient painted into the scene itself (used as
+        // scene.background, see initThreeJSJunction) — replaces relying on a transparent
+        // canvas + CSS gradient behind it, which was the root cause of the sky rendering as
+        // colorful static/noise on some browsers/GPUs.
+        function createSkyGradientTexture() {
+            const c = document.createElement('canvas');
+            c.width = 8; c.height = 256;
+            const ctx = c.getContext('2d');
+            const grad = ctx.createLinearGradient(0, 0, 0, 256);
+            grad.addColorStop(0, '#4f96e0');
+            grad.addColorStop(0.45, '#8fc7ef');
+            grad.addColorStop(0.75, '#cfe9f7');
+            grad.addColorStop(1, '#eaf4e6');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 8, 256);
+            const tex = new THREE.CanvasTexture(c);
+            return tex;
         }
 
         // NEW: procedurally-painted textures (no external image downloads needed) so the
@@ -946,6 +1002,49 @@
         /* Build the 3D road directly from the real OSRM route geometry (the same
            coordinates that drive the 2D map), instead of a synthetic curve, so the
            junction's shape actually matches the road being driven. */
+        // BUGFIX: THREE.TubeGeometry orients its cross-section using automatically-computed
+        // Frenet frames, which are numerically unstable on nearly-straight curves (a
+        // well-known three.js quirk) — the frame visibly rotates along the tube's length,
+        // which for a round curb or thin guide line is barely noticeable, but for the WIDE,
+        // flat-topped road surface it read as the whole road twisting/tilting diagonally,
+        // especially obvious from the close-up ドライバー視点 camera. This instead builds the
+        // road as a flat ribbon using a manually-computed, always-horizontal "right" vector
+        // (tangent × world-up) at each point, so the road surface can never twist regardless
+        // of how straight or curved the real route geometry is.
+        function buildFlatRoadRibbon(curve, segments, halfWidth) {
+            const positions = [];
+            const normals = [];
+            const uvs = [];
+            const indices = [];
+            const worldUp = new THREE.Vector3(0, 1, 0);
+
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                const p = curve.getPointAt(t);
+                const tangent = curve.getTangentAt(t).normalize();
+                let right = new THREE.Vector3().crossVectors(tangent, worldUp);
+                if (right.lengthSq() < 1e-6) right.set(1, 0, 0); // tangent ~vertical fallback
+                right.normalize();
+
+                const leftPt = p.clone().addScaledVector(right, -halfWidth);
+                const rightPt = p.clone().addScaledVector(right, halfWidth);
+                positions.push(leftPt.x, leftPt.y, leftPt.z, rightPt.x, rightPt.y, rightPt.z);
+                normals.push(0, 1, 0, 0, 1, 0);
+                uvs.push(0, t, 1, t);
+            }
+            for (let i = 0; i < segments; i++) {
+                const a = i * 2, b = i * 2 + 1, c = (i + 1) * 2, d = (i + 1) * 2 + 1;
+                indices.push(a, c, b, b, c, d);
+            }
+
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geo.setIndex(indices);
+            return geo;
+        }
+
         function buildRealRoadFromRoute(stepIdx, anchorLat, anchorLng, bearingDeg) {
             const lookBehind = 6, lookAhead = 26;
             const start = Math.max(0, stepIdx - lookBehind);
@@ -966,11 +1065,17 @@
             const curve = new THREE.CatmullRomCurve3(pts);
             const segments = Math.max(24, pts.length * 3);
 
-            // NEW: brighter, textured asphalt (was a near-black flat color) so the road reads
-            // as real daytime pavement, plus light concrete curb/shoulder strips along both
-            // edges for a more realistic finished-road silhouette against the grass ground.
-            const roadGeo = new THREE.TubeGeometry(curve, segments, 3.6, 8, false);
-            const roadMat = new THREE.MeshStandardMaterial({ map: createAsphaltTexture(), color: 0xaaaaaa, roughness: 0.92, metalness: 0.02 });
+            // FIXED: the road used to be a round TubeGeometry (a pipe swept along the curve).
+            // At the close, low driver-view camera distance that put the camera right at the
+            // pipe's own surface height, so the road filled almost the whole screen as one
+            // giant grey dome instead of reading as a road at all — and TubeGeometry's default
+            // Frenet-frame orientation can twist/roll along a curve, which was the "road looks
+            // tilted" bug in driver view. This builds a genuinely FLAT ribbon instead: for
+            // every point along the curve, "right" is always derived from a level, world-up
+            // cross product rather than a Frenet frame, so the road surface can never roll or
+            // bank unexpectedly and always reads as a flat, level road.
+            const roadGeo = buildFlatRoadRibbon(curve, segments, 3.6);
+            const roadMat = new THREE.MeshStandardMaterial({ map: createAsphaltTexture(), color: 0xaaaaaa, roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide });
             const roadMesh = new THREE.Mesh(roadGeo, roadMat);
             roadMesh.receiveShadow = true;
             roadGroup.add(roadMesh);
@@ -1215,8 +1320,13 @@
                 threeCamera.lookAt(0, 2, -25);
                 if (viewName) viewName.innerText = 'ドローン視点';
             } else {
-                threeCamera.position.set(0, 3.5, 18);
-                threeCamera.lookAt(0, 4, -30);
+                // FIXED: the road is now a flat ribbon sitting at y≈0 near the camera (it used
+                // to be a round tube whose surface sat at y≈3.6, which is what the old
+                // driver-view camera height of 3.5 was actually calibrated for) — a windshield
+                // eye height of ~1.6 units above the flat road, close to the vehicle's own
+                // position, reads correctly now instead of nearly clipping into the road.
+                threeCamera.position.set(0, 1.6, 3);
+                threeCamera.lookAt(0, 1.3, -40);
                 if (viewName) viewName.innerText = 'ドライバー視点';
             }
         }
@@ -1236,6 +1346,32 @@
 
         /* Check junction approach and update realistic 3D Graphics based on route geometry */
         // NEW: turn OSRM's maneuver type/modifier into a natural Japanese instruction
+        /* ====================================================================
+           BUGFIX: 経路案内の食い違い — the turn-direction ICON next to the banner text
+           (and the one in the 3D junction header) were hard-coded "turn_right" in the HTML
+           and never actually updated by any code, so they always showed a right-turn arrow
+           regardless of the real maneuver — while the text/voice, which WAS derived from
+           the real OSRM maneuver, could correctly say "左折" (left) or anything else. That
+           mismatch between a frozen icon and live, correct text/speech is exactly what this
+           reproduces "音声案内、文字の案内、実際の経路が食い違ってる" bug. This derives a
+           matching icon from the same maneuver object maneuverToText() already uses.
+           ==================================================================== */
+        function maneuverToIcon(step) {
+            if (!step || !step.maneuver) return 'straight';
+            const { type, modifier } = step.maneuver;
+            if (type === 'arrive') return 'flag';
+            if (type === 'depart') return 'trip_origin';
+            if (type === 'roundabout' || type === 'rotary') return 'roundabout_left';
+            if (modifier === 'uturn') return 'u_turn_left';
+            const iconMap = {
+                'left': 'turn_left', 'right': 'turn_right',
+                'slight left': 'turn_slight_left', 'slight right': 'turn_slight_right',
+                'sharp left': 'turn_sharp_left', 'sharp right': 'turn_sharp_right',
+                'straight': 'straight'
+            };
+            return iconMap[modifier] || 'straight';
+        }
+
         function maneuverToText(step) {
             if (!step || !step.maneuver) return '直進';
             const { type, modifier } = step.maneuver;
@@ -1396,6 +1532,14 @@
         }
         let upcomingLandmarkStepIdx = -1;
         let lastJctInstructionText = '';
+        // BUGFIX: the 3D scene / title used to only be (re)rendered the moment the panel first
+        // appeared, and never again while it stayed open — so if two maneuvers fell close
+        // together (a right turn immediately followed by a left turn, say), the panel would
+        // silently keep showing the FIRST turn's arrow/name/title even once voice guidance had
+        // already moved on to announcing the second one. That's exactly the "voice says one
+        // thing, the 3D view/text says another" mismatch — tracking which step is currently
+        // rendered and re-rendering whenever it changes (not just on first open) fixes it.
+        let lastRenderedJctStepIdx = -1;
 
         function checkJunctionApproach() {
             const jctBox = document.getElementById('junction-3d-container');
@@ -1414,6 +1558,12 @@
             const instructionText = upcomingStep ? maneuverToText(upcomingStep) : '直進';
             const roadName = (upcomingStep && upcomingStep.name) ? upcomingStep.name : '道なり';
             const isHighway = !!(upcomingStep && upcomingStep.ref);
+            // BUGFIX: keep the turn-direction icon in sync with the real maneuver (see
+            // maneuverToIcon above) — this used to be a hard-coded right-turn arrow that
+            // never changed regardless of what the text/voice actually said.
+            const turnIcon = maneuverToIcon(upcomingStep);
+            const bannerIconEl = document.getElementById('banner-turn-icon');
+            if (bannerIconEl) bannerIconEl.innerText = turnIcon;
 
             // Top banner: always show the real upcoming instruction + real remaining distance
             if (bannerNextTurn) {
@@ -1464,10 +1614,18 @@
                 if (jctDistEl) jctDistEl.innerText = `あと ${Math.round(distToNextManeuverM)}m (実地形追従3D)`;
                 lastJctInstructionText = instructionText;
                 upcomingLandmarkStepIdx = upcomingStepIdx;
-                if (jctBox.classList.contains('hidden')) {
+                const justOpened = jctBox.classList.contains('hidden');
+                if (justOpened) {
                     jctBox.classList.remove('hidden');
                     setTimeout(resizeJunction3D, 50);
+                }
+                // BUGFIX: re-render whenever the upcoming maneuver has actually changed, not
+                // only the first time the panel opens — see lastRenderedJctStepIdx above.
+                if (justOpened || upcomingStepIdx !== lastRenderedJctStepIdx) {
+                    lastRenderedJctStepIdx = upcomingStepIdx;
                     updateJunction3DScene(simIndex, roadName, upcomingStep && upcomingStep.maneuver);
+                    const jctTurnIconEl = document.getElementById('jct-turn-icon');
+                    if (jctTurnIconEl) jctTurnIconEl.innerText = turnIcon;
                     // NEW: try to show a real, reverse-geocoded landmark/intersection name (like a
                     // genuine car nav's junction sign) instead of just the OSM road name; falls back
                     // to the road name immediately while the lookup is in flight.
@@ -1484,6 +1642,7 @@
                 }
             } else {
                 if (jctBox) jctBox.classList.add('hidden');
+                lastRenderedJctStepIdx = -1;
                 if (jctListPanel && !jctListManuallyHidden && simTraveledM > 0) {
                     const items = computeUpcomingJunctions(4);
                     if (items.length > 0) {
@@ -1510,11 +1669,33 @@
             closeTConnectMenu();
             switchAudioSource(source);
             document.getElementById('carplay-overlay').classList.remove('hidden');
+            // BUGFIX: carplay-overlay only covered its own nested container's box, which
+            // stops short of the right-side hardware button strip (zoom/Gemini/radio/re-
+            // search) — that strip sat physically beside it, visually clipping/hiding the
+            // right edge of the Apple Music (or radio/MP3) screen. This measures the whole
+            // simulated head-unit display (#screen-container, which the hw-strip is also
+            // part of) and pins the overlay exactly over it with real fixed-position pixel
+            // coordinates, so CarPlay now genuinely takes over the entire screen edge-to-edge.
+            alignCarplayOverlayToScreen();
+            window.addEventListener('resize', alignCarplayOverlayToScreen);
         }
 
         function closeCarPlayOverlay() {
             playBeep();
             document.getElementById('carplay-overlay').classList.add('hidden');
+            window.removeEventListener('resize', alignCarplayOverlayToScreen);
+        }
+
+        function alignCarplayOverlayToScreen() {
+            const overlay = document.getElementById('carplay-overlay');
+            const screen = document.getElementById('screen-container');
+            if (!overlay || !screen) return;
+            const rect = screen.getBoundingClientRect();
+            overlay.style.position = 'fixed';
+            overlay.style.top = rect.top + 'px';
+            overlay.style.left = rect.left + 'px';
+            overlay.style.width = rect.width + 'px';
+            overlay.style.height = rect.height + 'px';
         }
 
         function switchAudioSource(source) {
@@ -2703,6 +2884,7 @@
                 lastAnnouncedStepIdx = { far: -1, mid: -1, near: -1, now: -1 };
                 lastLongStraightAnnounceIdx = -1;
                 jctListManuallyHidden = false;
+                lastRenderedJctStepIdx = -1;
                 Object.keys(jctLandmarkCache).forEach(k => delete jctLandmarkCache[k]);
 
                 if (routePolyline) map.removeLayer(routePolyline);
@@ -4094,6 +4276,9 @@ NAVIGATE: <場所の名前>
                 if (btn) btn.classList.remove('active');
                 speakGuidance('全画面表示に切り替えました。');
             }
+            // map-section's own width changes as the split panel opens/closes (its CSS
+            // transition runs ~300ms) — resize the rotatable #map once that settles.
+            setTimeout(sizeRotatableMap, 350);
         }
 
         function toggleTConnectMenu() { playBeep(); document.getElementById('tconnect-menu').classList.toggle('hidden'); }
