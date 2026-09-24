@@ -1691,11 +1691,20 @@
             const screen = document.getElementById('screen-container');
             if (!overlay || !screen) return;
             const rect = screen.getBoundingClientRect();
+            // BUGFIX: this used to pin the overlay to the WHOLE screen rect, top edge
+            // included — which covers the top status bar (clock/weather/and critically the
+            // "now playing" Apple Music mini-player + controls), making the music info and
+            // its play/pause button disappear the instant you open Audio/CarPlay, T-Connect
+            // menu, etc. Now it starts just below the top bar so that bar (and the music
+            // controls in it) stays visible/reachable no matter which full-screen "app" is
+            // open, the way a real car head unit keeps its status bar persistent.
+            const topBar = document.getElementById('top-status-bar');
+            const topBarH = topBar ? topBar.getBoundingClientRect().height : 0;
             overlay.style.position = 'fixed';
-            overlay.style.top = rect.top + 'px';
+            overlay.style.top = (rect.top + topBarH) + 'px';
             overlay.style.left = rect.left + 'px';
             overlay.style.width = rect.width + 'px';
-            overlay.style.height = rect.height + 'px';
+            overlay.style.height = (rect.height - topBarH) + 'px';
         }
 
         function switchAudioSource(source) {
@@ -2712,7 +2721,7 @@
             playBeep();
             const inputId = target === 'origin' ? 'origin-input' : (target === 'via' ? 'via-input' : 'dest-input');
             const resId = target === 'origin' ? 'origin-search-results' : (target === 'via' ? 'via-search-results' : 'dest-search-results');
-            const query = document.getElementById(inputId).value;
+            const query = document.getElementById(inputId).value.trim();
             if (!query) return;
 
             const style = SEARCH_TARGET_STYLE[target] || SEARCH_TARGET_STYLE.dest;
@@ -2722,34 +2731,140 @@
             try {
                 const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&countrycodes=jp&addressdetails=1&limit=5`;
                 const res = await fetch(url);
+                // BUGFIX: a non-OK response (rate-limited, temporarily down, etc.) used to fall
+                // straight through to res.json(), which either threw a generic "通信エラー" or, if
+                // the error page happened to parse as an empty array, silently showed "候補が
+                // 見つかりませんでした" as if the place genuinely didn't exist. Both cases are now
+                // routed into the same AI-assisted retry below instead of just giving up.
+                if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
 
                 if (data.length === 0) {
-                    box.innerHTML = '<div class="text-xs text-red-400 p-2">候補が見つかりませんでした</div>';
+                    // NEW: a plain geocoder has nothing for free-form/broad requests like "現在地
+                    //付近の観光地" — try an AI-assisted interpretation instead of dead-ending here.
+                    await searchLocationWithAiFallback(target, query, box, style);
+                    return;
+                }
+                renderGeocodeResults(box, data, target, style);
+            } catch (err) {
+                await searchLocationWithAiFallback(target, query, box, style, true);
+            }
+        }
+
+        // Renders plain Nominatim geocoding candidates as selectable cards.
+        function renderGeocodeResults(box, data, target, style) {
+            // BUGFIX: the place name/address/category text was inserted directly into the HTML
+            // with no escaping at all — a result containing "&", "<", etc. (not rare in real
+            // OSM data — company names, ampersands in addresses) could silently corrupt the
+            // card's markup, which looked like "search returned nothing" even though Nominatim
+            // had genuinely found matches.
+            box.innerHTML = data.map(item => {
+                const parts = item.display_name.split(',').map(p => p.trim());
+                const name = parts[0];
+                const address = parts.slice(1).join('、');
+                const category = (item.type || item.class || '').replace(/_/g, ' ');
+                return `
+                <button onclick="selectSearchResult('${target}', '${escJs(name)}', ${item.lat}, ${item.lon})" class="w-full p-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 active:scale-[0.98] transition text-left border border-slate-700 flex items-start gap-3">
+                    <span class="material-symbols-filled text-${style.color}-400 text-2xl shrink-0 mt-0.5">${style.icon}</span>
+                    <div class="min-w-0 flex-1">
+                        <div class="font-bold text-sm text-white truncate">${escapeHtml(name)}</div>
+                        <div class="text-xs text-slate-400 leading-snug mt-0.5 line-clamp-2">${escapeHtml(address)}</div>
+                        ${category ? `<div class="text-[10px] text-${style.color}-400 font-bold mt-1">${escapeHtml(category)}</div>` : ''}
+                    </div>
+                    <span class="material-symbols-filled text-slate-600 text-lg shrink-0 mt-0.5">chevron_right</span>
+                </button>
+            `;
+            }).join('');
+        }
+
+        // NEW FEATURE: AI-assisted search fallback. Nominatim is a plain geocoder — it has
+        // nothing for broad, natural-language requests like "現在地付近の観光地" or "この辺の
+        // 美味しいラーメン屋", which just came back as "候補が見つかりませんでした" even though the
+        // request was perfectly reasonable. This asks Gemini to interpret the query as either
+        // (a) a specific real place name to re-geocode via the same Nominatim search, or (b) a
+        // "nearby category" request, which is then answered with real OSM data via the same
+        // Overpass-based nearby search the ジャンル category screen uses (fetchNearbyPOIs).
+        async function searchLocationWithAiFallback(target, query, box, style, wasError = false) {
+            const apiKey = getActiveGeminiApiKey();
+            if (!apiKey) {
+                box.innerHTML = wasError
+                    ? '<div class="text-xs text-red-400 p-2">通信エラーが発生しました。しばらくしてからもう一度お試しください。</div>'
+                    : '<div class="text-xs text-red-400 p-2">候補が見つかりませんでした。別の地名や住所でお試しください。<br><span class="text-slate-500">(「設定」でGemini APIキーを登録すると、「現在地付近の観光地」のような曖昧な検索もできるようになります)</span></div>';
+                return;
+            }
+
+            box.innerHTML = `<div class="text-xs text-cyan-400 p-2 font-bold flex items-center gap-2"><span class="material-symbols-filled fa-spin">progress_activity</span> AIが検索意図を解析中...</div>`;
+
+            try {
+                const prompt = `あなたはカーナビの目的地検索アシスタントです。ユーザーが検索ボックスに入力した文字列を解釈してください。
+現在地: 緯度${currentPos[0].toFixed(4)}, 経度${currentPos[1].toFixed(4)}
+入力: 「${query}」
+
+次のJSON形式で「のみ」回答してください（説明文・前置き・コードブロック記号は一切不要、JSON以外の文字を含めない）:
+{"mode":"place","name":"具体的な地名・施設名（Nominatimで検索できる実在の名称に言い換えたもの）"}
+または
+{"mode":"nearby","category":"convenience|restaurant|cafe|gas_station|ev_charge|parking|hospital|hotel|attraction"}
+
+「現在地付近の観光地」「この辺のコンビニ」のような周辺カテゴリ検索なら必ずnearby、特定の場所・施設名を指しているならplaceを選んでください。`;
+
+                const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: { maxOutputTokens: 150, thinkingConfig: { thinkingLevel: 'minimal' } }
+                    })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const json = await res.json();
+                const text = json.candidates && json.candidates[0] && json.candidates[0].content &&
+                    json.candidates[0].content.parts && json.candidates[0].content.parts[0] &&
+                    json.candidates[0].content.parts[0].text;
+                if (!text) throw new Error('no AI response');
+                const cleaned = text.replace(/```json|```/g, '').trim();
+                const parsed = JSON.parse(cleaned);
+
+                if (parsed.mode === 'nearby' && parsed.category) {
+                    await renderNearbySearchInline(box, target, style, parsed.category);
                     return;
                 }
 
-                // NEW: Material 3 style candidate cards — bigger touch target, two-line
-                // (name + full address) so the driver can actually tell candidates apart.
-                box.innerHTML = data.map(item => {
-                    const parts = item.display_name.split(',').map(p => p.trim());
-                    const name = parts[0];
-                    const address = parts.slice(1).join('、');
-                    const category = (item.type || item.class || '').replace(/_/g, ' ');
-                    return `
-                    <button onclick="selectSearchResult('${target}', '${escJs(name)}', ${item.lat}, ${item.lon})" class="w-full p-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 active:scale-[0.98] transition text-left border border-slate-700 flex items-start gap-3">
-                        <span class="material-symbols-filled text-${style.color}-400 text-2xl shrink-0 mt-0.5">${style.icon}</span>
-                        <div class="min-w-0 flex-1">
-                            <div class="font-bold text-sm text-white truncate">${name}</div>
-                            <div class="text-xs text-slate-400 leading-snug mt-0.5 line-clamp-2">${address}</div>
-                            ${category ? `<div class="text-[10px] text-${style.color}-400 font-bold mt-1">${category}</div>` : ''}
-                        </div>
-                        <span class="material-symbols-filled text-slate-600 text-lg shrink-0 mt-0.5">chevron_right</span>
-                    </button>
-                `;
-                }).join('');
+                const placeName = (parsed.name || query).trim();
+                const geoUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(placeName)}&countrycodes=jp&addressdetails=1&limit=5`;
+                const geoRes = await fetch(geoUrl);
+                const geoData = await geoRes.json();
+                if (!geoData.length) {
+                    box.innerHTML = `<div class="text-xs text-red-400 p-2">「${escapeHtml(placeName)}」に該当する候補が見つかりませんでした。</div>`;
+                    return;
+                }
+                renderGeocodeResults(box, geoData, target, style);
             } catch (err) {
-                box.innerHTML = '<div class="text-xs text-red-400 p-2">通信エラー</div>';
+                box.innerHTML = '<div class="text-xs text-red-400 p-2">候補が見つかりませんでした。別のキーワードでお試しください。</div>';
+            }
+        }
+
+        // Renders a "nearby category" AI-fallback result inline in the search results box,
+        // reusing the real Overpass-based nearby search (see fetchNearbyPOIs).
+        async function renderNearbySearchInline(box, target, style, category) {
+            const label = NEARBY_LABEL_MAP[category] || '周辺スポット';
+            box.innerHTML = `<div class="text-xs text-cyan-400 p-2 font-bold flex items-center gap-2"><span class="material-symbols-filled fa-spin">progress_activity</span> ${escapeHtml(label)}を検索中...</div>`;
+            try {
+                const pois = await fetchNearbyPOIs(category, 8);
+                if (!pois.length) {
+                    box.innerHTML = `<div class="text-xs text-red-400 p-2">周辺3km以内に${escapeHtml(label)}が見つかりませんでした。</div>`;
+                    return;
+                }
+                box.innerHTML = `<div class="text-[10px] text-cyan-400 font-bold px-1 pb-1">AI検索: ${escapeHtml(label)}</div>` + pois.map(p => `
+                    <button onclick="selectSearchResult('${target}', '${escJs(p.name)}', ${p.lat}, ${p.lon})" class="w-full p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 active:scale-[0.98] transition text-left border border-slate-700 flex items-center justify-between gap-2 mb-1.5">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                            <span class="material-symbols-filled text-${style.color}-400 text-xl shrink-0">${style.icon}</span>
+                            <span class="font-bold text-sm text-white truncate">${escapeHtml(p.name)}</span>
+                        </div>
+                        <span class="text-[10px] text-cyan-300 font-black digital-font whitespace-nowrap shrink-0">${p.distM < 1000 ? Math.round(p.distM) + 'm' : (p.distM / 1000).toFixed(1) + 'km'}</span>
+                    </button>
+                `).join('');
+            } catch (err) {
+                box.innerHTML = '<div class="text-xs text-red-400 p-2">周辺検索中にエラーが発生しました。通信環境をご確認ください。</div>';
             }
         }
 
@@ -4195,53 +4310,66 @@ NAVIGATE: <場所の名前>
             else sc.classList.remove('dark-mode-map');
         }
 
-        function openNearbyPOI(type) {
-            playBeep();
-            const OVERPASS_TAGS = {
-                convenience: 'shop=convenience',
-                gas_station: 'amenity=fuel',
-                ev_charge: 'amenity=charging_station',
-                parking: 'amenity=parking',
-                restaurant: 'amenity=restaurant',
-                cafe: 'amenity=cafe',
-                hospital: 'amenity=hospital',
-                hotel: 'tourism=hotel',
-                attraction: 'tourism=attraction'
-            };
-            const labelMap = {
-                convenience: '周辺コンビニ', gas_station: 'ガソリンスタンド', ev_charge: 'EV充電スポット', parking: '周辺駐車場',
-                restaurant: '周辺飲食店', cafe: '周辺カフェ', hospital: '周辺病院', hotel: '周辺ホテル', attraction: '周辺観光地'
-            };
-            const label = labelMap[type] || '周辺スポット';
-            const tagQuery = OVERPASS_TAGS[type] || OVERPASS_TAGS.convenience;
+        // NEW: shared by openNearbyPOI (ジャンル category screen) and the AI-assisted
+        // destination search fallback below, so both use one real Overpass-based nearby
+        // search instead of duplicating the query logic.
+        const OVERPASS_TAG_MAP = {
+            convenience: 'shop=convenience',
+            gas_station: 'amenity=fuel',
+            ev_charge: 'amenity=charging_station',
+            parking: 'amenity=parking',
+            restaurant: 'amenity=restaurant',
+            cafe: 'amenity=cafe',
+            hospital: 'amenity=hospital',
+            hotel: 'tourism=hotel',
+            attraction: 'tourism=attraction'
+        };
+        const NEARBY_LABEL_MAP = {
+            convenience: '周辺コンビニ', gas_station: 'ガソリンスタンド', ev_charge: 'EV充電スポット', parking: '周辺駐車場',
+            restaurant: '周辺飲食店', cafe: '周辺カフェ', hospital: '周辺病院', hotel: '周辺ホテル', attraction: '周辺観光地'
+        };
+
+        async function fetchNearbyPOIs(type, limit = 10) {
+            const tagQuery = OVERPASS_TAG_MAP[type] || OVERPASS_TAG_MAP.convenience;
             const [lat, lon] = currentPos;
             const radius = 3000;
-            const query = `[out:json][timeout:15];node[${tagQuery}](around:${radius},${lat},${lon});out body 12;`;
+            const query = `[out:json][timeout:15];node[${tagQuery}](around:${radius},${lat},${lon});out body ${Math.max(limit, 12)};`;
             const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+            const res = await fetch(url);
+            const data = await res.json();
+            return (data.elements || [])
+                .filter(el => el.lat && el.lon)
+                .map(el => ({
+                    name: (el.tags && el.tags.name) || NEARBY_LABEL_MAP[type] || 'スポット',
+                    lat: el.lat,
+                    lon: el.lon,
+                    distM: haversineM(lat, lon, el.lat, el.lon)
+                }))
+                .sort((a, b) => a.distM - b.distM)
+                .slice(0, limit);
+        }
 
+        function openNearbyPOI(type) {
+            playBeep();
+            const label = NEARBY_LABEL_MAP[type] || '周辺スポット';
             openCustomModal(label, `<div class="text-xs text-slate-400 p-2 flex items-center gap-2"><span class="material-symbols-filled fa-spin">progress_activity</span> 半径3km以内を検索中...</div>`);
 
-            fetch(url)
-                .then(res => res.json())
-                .then(data => {
-                    const pois = (data.elements || [])
-                        .filter(el => el.lat && el.lon)
-                        .map(el => ({
-                            name: (el.tags && el.tags.name) || label,
-                            lat: el.lat,
-                            lon: el.lon,
-                            distM: haversineM(lat, lon, el.lat, el.lon)
-                        }))
-                        .sort((a, b) => a.distM - b.distM)
-                        .slice(0, 10);
-
+            fetchNearbyPOIs(type, 10)
+                .then(pois => {
                     if (!pois.length) {
                         openCustomModal(label, '<div class="text-xs text-slate-400 p-2">周辺3km以内に見つかりませんでした。</div>');
                         return;
                     }
+                    // BUGFIX: names were only escaped for a stray single-quote (`.replace(/'/g,
+                    // "\\'")`), which still breaks (and can silently corrupt the button, making
+                    // it look like nothing rendered) on any place name containing a literal
+                    // double-quote character, since the onclick attribute itself is
+                    // double-quoted — same class of bug as the MP3 list fix. escJs() handles
+                    // backslashes, single AND double quotes; escapeHtml() protects the visible
+                    // label text too (e.g. names with "&" or "<").
                     const body = pois.map(p => `
-                        <button onclick="closeModal(); setQuickDestination('${p.name.replace(/'/g, "\\'")}', ${p.lat}, ${p.lon})" class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left flex items-center justify-between mb-1.5">
-                            <span class="text-xs font-bold text-white truncate mr-2">${p.name}</span>
+                        <button onclick="closeModal(); setQuickDestination('${escJs(p.name)}', ${p.lat}, ${p.lon})" class="w-full p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left flex items-center justify-between mb-1.5">
+                            <span class="text-xs font-bold text-white truncate mr-2">${escapeHtml(p.name)}</span>
                             <span class="text-[10px] text-cyan-300 font-black digital-font whitespace-nowrap">${p.distM < 1000 ? Math.round(p.distM) + 'm' : (p.distM / 1000).toFixed(1) + 'km'}</span>
                         </button>
                     `).join('');
@@ -4281,8 +4409,25 @@ NAVIGATE: <場所の名前>
             setTimeout(sizeRotatableMap, 350);
         }
 
-        function toggleTConnectMenu() { playBeep(); document.getElementById('tconnect-menu').classList.toggle('hidden'); }
-        function closeTConnectMenu() { playBeep(); document.getElementById('tconnect-menu').classList.add('hidden'); }
+        function toggleTConnectMenu() {
+            playBeep();
+            const menu = document.getElementById('tconnect-menu');
+            if (!menu) return;
+            menu.classList.toggle('hidden');
+            // BUGFIX: this used to rely purely on "absolute inset-0" (i.e. top:0), covering the
+            // top status bar — including the persistent Apple Music "now playing" mini-player
+            // and its play/pause button — the instant the app menu opened. Positioning it just
+            // below that bar instead keeps it visible/reachable from the menu too.
+            if (!menu.classList.contains('hidden')) {
+                const topBar = document.getElementById('top-status-bar');
+                if (topBar) menu.style.top = topBar.getBoundingClientRect().height + 'px';
+            }
+        }
+        function closeTConnectMenu() {
+            playBeep();
+            const menu = document.getElementById('tconnect-menu');
+            if (menu) menu.classList.add('hidden');
+        }
 
         function openCustomModal(title, bodyHtml, opts = {}) {
             document.getElementById('modal-title').innerHTML = `<span class="material-symbols-filled" >info</span> ${title}`;
