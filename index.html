@@ -113,6 +113,10 @@
                 </div>
                 
                 <!-- TOYOTA LEFT DOCK BAR -->
+                <!-- NEW: reordered per explicit request — top to bottom:
+                     メニュー / マップ / 目的地検索 / オーディオ / エネルギー / ドラレコ / 設定 / AI.
+                     電話 moved into the T-Connect app menu grid (メニュー) instead of taking a
+                     primary dock slot. -->
                 <div class="toyota-side-dock w-16 sm:w-20 h-full flex flex-col justify-between items-center py-3 z-30 select-none">
                     <div class="flex flex-col gap-3 w-full items-center">
                         <!-- Toyota Crown Logo / Home Button -->
@@ -128,20 +132,20 @@
                             <span class="material-symbols-filled text-xl" >navigation</span>
                             <span class="text-[10px] font-extrabold mt-1">マップ</span>
                         </button>
+
+                        <button id="dock-dest" onclick="openDestinationCategoryMenu()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-xl" >search</span>
+                            <span class="text-[10px] font-extrabold mt-1">目的地検索</span>
+                        </button>
                         
                         <button id="dock-audio" onclick="switchDockTab('audio')" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
                             <span class="material-symbols-filled text-xl" >music_note</span>
                             <span class="text-[10px] font-extrabold mt-1">オーディオ</span>
                         </button>
 
-                        <button id="dock-phone" onclick="launchCarPlayPhone()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
-                            <span class="material-symbols-filled text-xl" >call</span>
-                            <span class="text-[10px] font-extrabold mt-1">電話</span>
-                        </button>
-
-                        <button id="dock-car" onclick="openVehicleInfo()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
-                            <span class="material-symbols-filled text-xl" >directions_car</span>
-                            <span class="text-[10px] font-extrabold mt-1">車両情報</span>
+                        <button id="dock-energy" onclick="openVehicleInfo()" class="dock-btn w-full py-2.5 flex flex-col items-center justify-center">
+                            <span class="material-symbols-filled text-xl text-emerald-400" >bolt</span>
+                            <span class="text-[10px] font-extrabold mt-1">エネルギー</span>
                         </button>
 
                         <!-- NEW FEATURE 1: Dashcam Feed Direct Dock Switch -->
@@ -156,9 +160,14 @@
                             <span class="material-symbols-filled text-lg" >settings</span>
                             <span class="text-[9px] font-bold mt-0.5">設定</span>
                         </button>
-                        <!-- Voice Agent "Hey Toyota" Trigger Button -->
-                        <button onclick="triggerVoiceAgent()" class="w-11 h-11 rounded-full bg-gradient-to-tr from-blue-700 to-cyan-500 text-white flex items-center justify-center shadow-lg active:scale-90 transition pulse-glow">
-                            <span class="material-symbols-filled text-lg" >mic</span>
+                        <!-- Voice Agent "Hey Toyota" Trigger Button — restyled to match the rest of
+                             the dock list (icon + label) while keeping its distinct gradient/glow
+                             as the AI entry point. -->
+                        <button onclick="triggerVoiceAgent()" class="dock-btn w-full py-1.5 flex flex-col items-center justify-center">
+                            <span class="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-700 to-cyan-500 text-white flex items-center justify-center shadow-lg active:scale-90 transition pulse-glow">
+                                <span class="material-symbols-filled text-base" >mic</span>
+                            </span>
+                            <span class="text-[9px] font-bold mt-0.5">AI</span>
                         </button>
                     </div>
                 </div>
@@ -282,12 +291,19 @@
 
                             <!-- OVERLAY: Map Quick Floating Controls Stack -->
                             <div class="absolute top-3 left-3 z-10 flex flex-col gap-2 pointer-events-auto">
-                                <!-- Heading Compass Toggle -->
-                                <button id="btn-compass" onclick="toggleHeadingMode()" class="w-11 h-11 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl flex items-center justify-center text-white shadow-xl active:scale-90 transition">
-                                    <div id="compass-arrow" class="transition-transform duration-300">
-                                        <span class="material-symbols-filled text-red-500 text-2xl" >explore</span>
+                                <!-- Heading Compass Toggle — NEW: clock placed directly to its
+                                     right, per request, matching the real Toyota nav's compass
+                                     info cluster layout. -->
+                                <div class="flex items-center gap-2">
+                                    <button id="btn-compass" onclick="toggleHeadingMode()" class="w-11 h-11 shrink-0 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl flex items-center justify-center text-white shadow-xl active:scale-90 transition">
+                                        <div id="compass-arrow" class="transition-transform duration-300">
+                                            <span class="material-symbols-filled text-red-500 text-2xl" >explore</span>
+                                        </div>
+                                    </button>
+                                    <div class="h-11 px-2.5 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl flex items-center justify-center shadow-xl">
+                                        <span id="compass-clock" class="digital-font text-base font-bold text-white tracking-wider">17:42</span>
                                     </div>
-                                </button>
+                                </div>
 
                                 <!-- VICS Traffic Live Box -->
                                 <div class="bg-slate-900/95 backdrop-blur border border-red-800 px-2 py-1.5 rounded-lg text-center shadow-xl">
@@ -782,6 +798,13 @@
                             <span class="text-xs font-bold">HVエネルギーモニター</span>
                         </button>
 
+                        <!-- NEW: moved here from the left dock (now エネルギー takes that slot) so
+                             hands-free phone is still reachable from the app menu. -->
+                        <button onclick="launchCarPlayPhone()" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-emerald-500 transition active:scale-95">
+                            <span class="material-symbols-filled text-3xl text-emerald-400 mb-2" >call</span>
+                            <span class="text-xs font-bold">ハンズフリー電話</span>
+                        </button>
+
                         <button onclick="openNearbyPOI('convenience')" class="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-amber-500 transition active:scale-95">
                             <span class="material-symbols-filled text-3xl text-amber-400 mb-2" >storefront</span>
                             <span class="text-xs font-bold">周辺コンビニ</span>
@@ -860,8 +883,9 @@
                 <button onclick="openCarPlayAudio('radio')" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="ラジオ">
                     <span class="material-symbols-filled text-base text-red-400">radio</span>
                 </button>
-                <button onclick="recalculateRoute()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="ルート再検索">
-                    <span class="material-symbols-filled text-base text-amber-400" >refresh</span>
+                <!-- NEW: 再探索 → エアコン (per explicit request) -->
+                <button onclick="toggleClimatePanel(true)" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="エアコン">
+                    <span class="material-symbols-filled text-base text-sky-300" >mode_fan</span>
                 </button>
             </div>
 

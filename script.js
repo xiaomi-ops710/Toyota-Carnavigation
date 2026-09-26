@@ -20,7 +20,8 @@
             buttonSound: 'default',   // 'default' | 'soft' | 'chime' | 'off'
             navChime: 'default',      // 'default' | 'soft' | 'chime' | 'off'
             bootAnimation: 'classic', // 'classic' | 'radial' | 'minimal'
-            geminiApiKey: ''          // user-supplied key, saved from the 設定 screen
+            geminiApiKey: '',         // user-supplied key, saved from the 設定 screen
+            gasWebAppUrl: ''          // optional GAS Web App proxy URL — see callGeminiAI()
         };
 
         function loadAppSettings() {
@@ -46,6 +47,68 @@
             const fallback = (GEMINI_API_KEY || '').trim();
             if (!fallback || fallback === 'ここにGemini APIキーを貼り付け') return '';
             return fallback;
+        }
+
+        /* ====================================================================
+           NEW: Google Apps Script (GAS) proxy support — "GeminiAPIコード、いちいちアプリで
+           入力するのめんどくさい。GASと同期して開くだけでAI使えるようにしてほしい"
+           Instead of every visitor/browser needing its OWN saved API key, the site owner
+           deploys one small GAS Web App (code + steps: see GAS_SETUP_GUIDE below) that holds
+           the real Gemini key server-side in Script Properties — never exposed in this
+           public script.js. Once GAS_WEBAPP_URL is filled in below (or set in 設定, which
+           takes priority for testing), every visitor gets working AI features with zero
+           per-browser configuration, by design safer than shipping a raw key in the page.
+           ==================================================================== */
+        const GAS_WEBAPP_URL = ''; // デプロイしたGASウェブアプリのURLをここに貼り付け（任意）
+
+        function getActiveGasWebAppUrl() {
+            const fromSettings = (appSettings.gasWebAppUrl || '').trim();
+            if (fromSettings) return fromSettings;
+            return (GAS_WEBAPP_URL || '').trim();
+        }
+
+        function isAiConfigured() {
+            return !!(getActiveGasWebAppUrl() || getActiveGeminiApiKey());
+        }
+
+        // NEW: single shared entry point for every Gemini call in the app (submitAiQuery,
+        // searchLocationWithAiFallback) — prefers the GAS proxy when configured, falls back
+        // to a directly-saved API key otherwise, so both callers automatically benefit from
+        // whichever method is set up without duplicating the request logic.
+        async function callGeminiAI(prompt, maxOutputTokens = 200) {
+            const gasUrl = getActiveGasWebAppUrl();
+            if (gasUrl) {
+                // NEW: deliberately sent WITHOUT a Content-Type: application/json header (the
+                // body is still JSON text) — setting that header would make the browser send a
+                // CORS preflight OPTIONS request first, which Google Apps Script Web Apps don't
+                // handle by default, silently breaking every single call. Plain-text requests
+                // skip the preflight entirely; the GAS script parses e.postData.contents itself.
+                const res = await fetch(gasUrl, { method: 'POST', body: JSON.stringify({ prompt, maxOutputTokens }) });
+                if (!res.ok) throw new Error('GAS HTTP ' + res.status);
+                const json = await res.json();
+                if (json.error) throw new Error(json.error);
+                return json.text || '';
+            }
+
+            const apiKey = getActiveGeminiApiKey();
+            if (!apiKey) throw new Error('NO_KEY');
+            const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }],
+                    generationConfig: { maxOutputTokens, thinkingConfig: { thinkingLevel: 'minimal' } }
+                })
+            });
+            if (!res.ok) {
+                const errJson = await res.json().catch(() => ({}));
+                throw new Error((errJson.error && errJson.error.message) || ('HTTP ' + res.status));
+            }
+            const json = await res.json();
+            const text = json.candidates && json.candidates[0] && json.candidates[0].content &&
+                json.candidates[0].content.parts && json.candidates[0].content.parts[0] &&
+                json.candidates[0].content.parts[0].text;
+            return text || '';
         }
         // NOTE: the boot-splash failsafe (uncaught-error handler, auto-hide timer, and the
         // manual "tap to continue" skip-button timer) now lives in a tiny dependency-free
@@ -502,6 +565,13 @@
                 // load (e.g. a blocked CDN script) — log it, but don't leave the user stuck.
                 console.error('Initialization error (app still usable, some features may be degraded):', err);
             }
+
+            // NEW: if a GAS (Google Apps Script) sync URL has already been saved in 設定,
+            // quietly refresh the Gemini API key from it on every launch — so after the
+            // one-time setup, the driver never has to paste the key in by hand again; it's
+            // just there whenever the app opens. Silent (no UI, no error popups) since this
+            // runs unattended on every load.
+            syncGeminiKeyFromGas(true);
         }
 
         // NEW FEATURE: Toyota-style boot/startup splash animation (replicates factory startup screen)
@@ -560,6 +630,9 @@
             const m = String(d.getMinutes()).padStart(2, '0');
             document.getElementById('top-clock').innerText = `${h}:${m}`;
             document.getElementById('vics-time').innerText = `${h}:${m}`;
+            // NEW: clock placed next to the map's compass widget (see index.html)
+            const compassClock = document.getElementById('compass-clock');
+            if (compassClock) compassClock.innerText = `${h}:${m}`;
             if (mapThemeMode === 'auto') applyMapTheme();
         }
 
@@ -2785,8 +2858,11 @@
         // "nearby category" request, which is then answered with real OSM data via the same
         // Overpass-based nearby search the ジャンル category screen uses (fetchNearbyPOIs).
         async function searchLocationWithAiFallback(target, query, box, style, wasError = false) {
-            const apiKey = getActiveGeminiApiKey();
-            if (!apiKey) {
+            // NEW: routed through callGeminiAI() (prefers a configured GAS proxy, falls back to
+            // a directly-saved key) instead of checking getActiveGeminiApiKey() directly — a
+            // driver using GAS-sync-only (no raw key saved in this browser) was getting "no key
+            // configured" here even though AI search worked fine from the Gemini chat.
+            if (!isAiConfigured()) {
                 box.innerHTML = wasError
                     ? '<div class="text-xs text-red-400 p-2">通信エラーが発生しました。しばらくしてからもう一度お試しください。</div>'
                     : '<div class="text-xs text-red-400 p-2">候補が見つかりませんでした。別の地名や住所でお試しください。<br><span class="text-slate-500">(「設定」でGemini APIキーを登録すると、「現在地付近の観光地」のような曖昧な検索もできるようになります)</span></div>';
@@ -2807,19 +2883,7 @@
 
 「現在地付近の観光地」「この辺のコンビニ」のような周辺カテゴリ検索なら必ずnearby、特定の場所・施設名を指しているならplaceを選んでください。`;
 
-                const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ text: prompt }] }],
-                        generationConfig: { maxOutputTokens: 150, thinkingConfig: { thinkingLevel: 'minimal' } }
-                    })
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const json = await res.json();
-                const text = json.candidates && json.candidates[0] && json.candidates[0].content &&
-                    json.candidates[0].content.parts && json.candidates[0].content.parts[0] &&
-                    json.candidates[0].content.parts[0].text;
+                const text = await callGeminiAI(prompt, 150);
                 if (!text) throw new Error('no AI response');
                 const cleaned = text.replace(/```json|```/g, '').trim();
                 const parsed = JSON.parse(cleaned);
@@ -3652,9 +3716,6 @@
             } else if (tab === 'nav') {
                 document.getElementById('dock-nav').classList.add('active');
                 closeCarPlayOverlay();
-            } else if (tab === 'car') {
-                document.getElementById('dock-car').classList.add('active');
-                openVehicleInfo();
             }
         }
 
@@ -3837,16 +3898,15 @@
             // hard-coded in this file — if that was still the untouched placeholder text (or
             // a source edit never actually reached the deployed copy), the fetch would go
             // out anyway and come back with Google's own "API key not valid" error, which
-            // reads like an unexplained bug rather than "no key is configured". A key saved
-            // in 設定 is checked FIRST (see getActiveGeminiApiKey), and a clear, actionable
-            // message is shown immediately, with no network round-trip.
-            const apiKey = getActiveGeminiApiKey();
-            if (!apiKey) {
+            // reads like an unexplained bug rather than "no key is configured". isAiConfigured()
+            // checks BOTH the GAS proxy URL and a directly-saved key, giving a clear,
+            // actionable message immediately with no network round-trip if neither is set.
+            if (!isAiConfigured()) {
                 geminiChatHistory.push({
                     role: 'model',
-                    text: 'Gemini APIキーが設定されていません。「設定」→「AIアシスタント (Gemini)」欄でご自身のAPIキーを入力・保存してください。',
-                    html: 'Gemini APIキーが設定されていません。<br>「設定」→「AIアシスタント (Gemini)」欄でご自身のAPIキーを入力・保存してください。<br>' +
-                        '<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">キーの取得はこちら (Google AI Studio・無料)</a>',
+                    text: 'AI機能がまだ使えるようになっていません。「設定」→「AIアシスタント (Gemini)」でAPIキーを保存するか、GAS連携URLを設定してください。',
+                    html: 'AI機能がまだ使えるようになっていません。<br>「設定」→「AIアシスタント (Gemini)」でAPIキーを保存するか、GAS連携URLを設定してください。<br>' +
+                        '<a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">APIキーの取得はこちら (Google AI Studio・無料)</a>',
                     isError: true
                 });
                 renderGeminiChatMessages();
@@ -3876,28 +3936,10 @@ NAVIGATE: <場所の名前>
 
 質問: ${query}`;
 
-            // GitHub Pages版: サーバーがいないのでブラウザから直接Gemini APIを叩く。
-            // ⚠️ 設定画面で保存したGemini APIキーは、このブラウザのlocalStorageに平文で
-            // 保存され、ソースからも(そのブラウザ内では)読める状態になります。
-            // 個人の学習・文化祭用途などキーが漏れても実害が小さい前提での簡易実装です。
-            // 本気で守りたい場合は Cloudflare Workers 等の無料サーバーレスプロキシを別途挟んでください。
-            fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + apiKey, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: context }] }],
-                    generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingLevel: 'minimal' } }
-                })
-            })
-                .then(res => res.json().then(json => ({ ok: res.ok, json })))
-                .then(({ ok, json }) => {
-                    if (!ok) {
-                        const msg = (json.error && json.error.message) || 'HTTPエラー';
-                        throw new Error(msg);
-                    }
-                    const text = json.candidates && json.candidates[0] && json.candidates[0].content &&
-                        json.candidates[0].content.parts && json.candidates[0].content.parts[0] &&
-                        json.candidates[0].content.parts[0].text;
+            // NEW: routed through callGeminiAI(), which automatically prefers a GAS proxy
+            // (see 設定 → GAS連携URL) over a directly-saved key when both are configured.
+            callGeminiAI(context, 200)
+                .then(text => {
                     if (!text) {
                         geminiChatHistory[pendingIdx] = { role: 'model', text: '応答を取得できませんでした。', isError: true };
                         renderGeminiChatMessages();
@@ -4112,7 +4154,7 @@ NAVIGATE: <場所の名前>
                 <option value="chime" ${current === 'chime' ? 'selected' : ''}>チャイム</option>
                 <option value="off" ${current === 'off' ? 'selected' : ''}>オフ</option>
             `;
-            const hasKey = !!getActiveGeminiApiKey();
+            const hasKey = isAiConfigured();
             const body = `
                 <div class="space-y-3 text-xs">
                     <!-- NEW: moved here from the top status bar's "MODE: NORMAL" badge, which
@@ -4195,8 +4237,47 @@ NAVIGATE: <場所の名前>
                     <!-- NEW: Gemini APIキーをアプリ内で設定できるようにする（ソースコード編集不要） -->
                     <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
                         <div class="font-bold text-cyan-400 text-sm border-b border-slate-800 pb-1">AIアシスタント (Gemini)</div>
-                        <div class="text-[10px] text-slate-500 leading-relaxed">
-                            このブラウザだけに保存され、どこにも送信されません。取得は
+
+                        <!-- NEW: GAS (Google Apps Script) 連携 — 「GeminiAPIキーをいちいちアプリで
+                             入力するのが面倒」に対応。一度だけGAS側のURLを保存しておけば、次回以降は
+                             アプリを開くだけで自動的にAI機能が使えるようになる（毎回キーを貼り直す必要
+                             がなくなる）。 -->
+                        <div class="bg-slate-900 border border-cyan-900 rounded-xl p-2.5 space-y-2">
+                            <div class="font-bold text-white text-[11px] flex items-center gap-1.5">
+                                <span class="material-symbols-filled text-sm text-cyan-400">sync</span> GAS連携 (推奨・毎回の入力不要)
+                            </div>
+                            <div class="text-[10px] text-slate-500 leading-relaxed">
+                                Google Apps Scriptで下記のようなWebアプリを1つデプロイし、そのURLをここに貼るだけ。
+                                以後はアプリを開くたびに自動でAPIキーが同期され、二度と手入力は不要になります。
+                            </div>
+                            <pre class="text-[9px] bg-slate-950 border border-slate-800 rounded-lg p-2 overflow-x-auto text-emerald-300 leading-snug">function doPost(e) {
+  var apiKey = "ここに自分のGemini APIキー"; // GAS側だけに保存
+  var req = JSON.parse(e.postData.contents);
+  var res = UrlFetchApp.fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey,
+    { method: "post", contentType: "application/json",
+      payload: JSON.stringify({ contents: [{ parts: [{ text: req.prompt }] }],
+        generationConfig: { maxOutputTokens: req.maxOutputTokens || 200 } }) });
+  var data = JSON.parse(res.getContentText());
+  var text = data.candidates[0].content.parts[0].text;
+  return ContentService.createTextOutput(JSON.stringify({ text: text }))
+    .setMimeType(ContentService.MimeType.JSON);
+}</pre>
+                            <div class="text-[9px] text-slate-500">↑コードエディタに貼り付け →「デプロイ」→「ウェブアプリ」→アクセス権「全員」で発行されるURLを↓に貼ってください。</div>
+                            <div class="flex items-center gap-1.5">
+                                <input id="gas-url-input" type="text" value="${(appSettings.gasWebAppUrl || '').replace(/"/g, '&quot;')}" placeholder="https://script.google.com/macros/s/.../exec" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-2 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400">
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <button onclick="saveGasWebAppUrl()" class="flex-1 py-2 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white font-bold text-[11px]">保存して同期</button>
+                                <button onclick="clearGasWebAppUrl()" class="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold text-[11px]">解除</button>
+                            </div>
+                            <div id="gas-sync-status" class="text-[10px] font-bold ${appSettings.gasWebAppUrl ? 'text-emerald-400' : 'text-slate-500'}">
+                                ${appSettings.gasWebAppUrl ? '✓ 連携済み — 起動のたびに自動同期されます' : '未設定'}
+                            </div>
+                        </div>
+
+                        <div class="text-[10px] text-slate-500 leading-relaxed pt-1">
+                            もしくは、GASを使わず直接APIキーをこのブラウザだけに保存することもできます（どこにも送信されません）。取得は
                             <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="underline text-cyan-300">Google AI Studio</a> から無料でできます。
                         </div>
                         <div class="flex items-center gap-1.5">
@@ -4210,12 +4291,74 @@ NAVIGATE: <場所の名前>
                             <button onclick="clearGeminiApiKey()" class="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold text-[11px]">削除</button>
                         </div>
                         <div id="gemini-key-status" class="text-[10px] font-bold ${hasKey ? 'text-emerald-400' : 'text-amber-400'}">
-                            ${hasKey ? '✓ APIキー設定済み' : '⚠ 未設定 — AIアシスタントを使うには入力してください'}
+                            ${hasKey ? '✓ AI機能が利用可能です' : '⚠ 未設定 — 上のGAS連携かAPIキーのどちらかを設定してください'}
                         </div>
                     </div>
                 </div>
             `;
             openCustomModal('T-Connect 設定', body);
+        }
+
+        // NEW: saves + immediately syncs the GAS Web App URL (see the settings card above).
+        function saveGasWebAppUrl() {
+            playBeep();
+            const input = document.getElementById('gas-url-input');
+            appSettings.gasWebAppUrl = input ? input.value.trim() : '';
+            saveAppSettings();
+            if (!appSettings.gasWebAppUrl) {
+                const status = document.getElementById('gas-sync-status');
+                if (status) { status.className = 'text-[10px] font-bold text-slate-500'; status.innerText = '未設定'; }
+                return;
+            }
+            syncGeminiKeyFromGas(false);
+        }
+
+        function clearGasWebAppUrl() {
+            playBeep();
+            appSettings.gasWebAppUrl = '';
+            saveAppSettings();
+            const input = document.getElementById('gas-url-input');
+            if (input) input.value = '';
+            const status = document.getElementById('gas-sync-status');
+            if (status) { status.className = 'text-[10px] font-bold text-slate-500'; status.innerText = '未設定'; }
+            refreshGeminiKeyStatusDisplay();
+        }
+
+        // NEW: pings the saved GAS Web App once and confirms it responds — this app calls
+        // callGeminiAI() (which routes through the GAS proxy automatically) for every real AI
+        // request, so nothing needs to be "downloaded" here; this just verifies connectivity
+        // and gives the driver clear, immediate feedback that the one-time setup worked.
+        async function syncGeminiKeyFromGas(silent = false) {
+            const url = (appSettings.gasWebAppUrl || '').trim();
+            const status = document.getElementById('gas-sync-status');
+            if (!url) return false;
+            if (status && !silent) { status.className = 'text-[10px] font-bold text-cyan-400'; status.innerText = '接続確認中...'; }
+            try {
+                const text = await callGeminiAI('「OK」とだけ日本語で答えてください。', 10);
+                if (!text) throw new Error('応答が空でした');
+                if (status) {
+                    status.className = 'text-[10px] font-bold text-emerald-400';
+                    status.innerText = `✓ ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} に接続確認済み — 起動のたびに自動で使えます`;
+                }
+                refreshGeminiKeyStatusDisplay();
+                return true;
+            } catch (err) {
+                if (status && !silent) {
+                    status.className = 'text-[10px] font-bold text-red-400';
+                    status.innerText = '接続に失敗しました: ' + (err && err.message ? err.message : err) + '（デプロイ設定「アクセスできるユーザー: 全員」を確認してください）';
+                }
+                return false;
+            }
+        }
+
+        // Keeps the lower "APIキー" status line in sync with whichever method (GAS or raw key)
+        // is actually active, without needing to fully re-render the whole 設定 screen.
+        function refreshGeminiKeyStatusDisplay() {
+            const el = document.getElementById('gemini-key-status');
+            if (!el) return;
+            const ok = isAiConfigured();
+            el.className = `text-[10px] font-bold ${ok ? 'text-emerald-400' : 'text-amber-400'}`;
+            el.innerText = ok ? '✓ AI機能が利用可能です' : '⚠ 未設定 — 上のGAS連携かAPIキーのどちらかを設定してください';
         }
 
         // NEW: applies + persists one of the sound/animation preferences above.
@@ -4240,13 +4383,8 @@ NAVIGATE: <場所の名前>
             const input = document.getElementById('gemini-key-input');
             appSettings.geminiApiKey = input ? input.value.trim() : '';
             saveAppSettings();
-            const ok = !!getActiveGeminiApiKey();
-            const status = document.getElementById('gemini-key-status');
-            if (status) {
-                status.className = `text-[10px] font-bold ${ok ? 'text-emerald-400' : 'text-amber-400'}`;
-                status.innerText = ok ? '✓ APIキーを保存しました' : '⚠ 未設定 — AIアシスタントを使うには入力してください';
-            }
-            speakGuidance(ok ? 'Gemini APIキーを保存しました。' : 'Gemini APIキーを削除しました。');
+            refreshGeminiKeyStatusDisplay();
+            speakGuidance(appSettings.geminiApiKey ? 'Gemini APIキーを保存しました。' : 'Gemini APIキーを削除しました。');
         }
 
         function clearGeminiApiKey() {
@@ -4255,12 +4393,7 @@ NAVIGATE: <場所の名前>
             saveAppSettings();
             const input = document.getElementById('gemini-key-input');
             if (input) input.value = '';
-            const ok = !!getActiveGeminiApiKey();
-            const status = document.getElementById('gemini-key-status');
-            if (status) {
-                status.className = `text-[10px] font-bold ${ok ? 'text-emerald-400' : 'text-amber-400'}`;
-                status.innerText = ok ? '✓ APIキー設定済み' : '⚠ 未設定 — AIアシスタントを使うには入力してください';
-            }
+            refreshGeminiKeyStatusDisplay();
         }
 
         function openDisplayChangeModal() {
