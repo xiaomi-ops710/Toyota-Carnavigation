@@ -610,17 +610,21 @@
         }
 
         // NEW FEATURE: show/hide the climate control panel to widen the map view
+        // FIXED: the hw-strip's エアコン button always called this with show=true, so pressing
+        // it again after opening did nothing — it could only be closed via the panel's own X
+        // or the (now-removed) reopen tab. Calling this with no argument now genuinely
+        // toggles based on the panel's current state, while callers that still want an
+        // explicit open/close (the panel's own close button, 設定's 表示/非表示 buttons) keep
+        // working exactly as before.
         function toggleClimatePanel(show) {
             playBeep();
             const panel = document.getElementById('split-climate-panel');
-            const reopenBtn = document.getElementById('btn-climate-reopen');
             if (!panel) return;
-            if (show) {
+            const shouldShow = (show === undefined) ? panel.classList.contains('climate-collapsed') : show;
+            if (shouldShow) {
                 panel.classList.remove('climate-collapsed');
-                if (reopenBtn) reopenBtn.classList.add('hidden');
             } else {
                 panel.classList.add('climate-collapsed');
-                if (reopenBtn) reopenBtn.classList.remove('hidden');
             }
         }
 
@@ -628,7 +632,10 @@
             const d = new Date();
             const h = String(d.getHours()).padStart(2, '0');
             const m = String(d.getMinutes()).padStart(2, '0');
-            document.getElementById('top-clock').innerText = `${h}:${m}`;
+            // NEW: the top-bar clock was removed (it now lives next to the map's compass
+            // widget below) — guarded with a null-check in case anything else still expects it.
+            const topClock = document.getElementById('top-clock');
+            if (topClock) topClock.innerText = `${h}:${m}`;
             document.getElementById('vics-time').innerText = `${h}:${m}`;
             // NEW: clock placed next to the map's compass widget (see index.html)
             const compassClock = document.getElementById('compass-clock');
@@ -2978,29 +2985,68 @@
             startAIRouteCalculationAnimation(name);
         }
 
-        /* AI Route Calculation Loading Animation */
+        /* AI Route Calculation Loading Animation — NEW: made this genuinely elaborate instead
+           of a single static pulsing circle: radar-style expanding rings, a rotating gradient
+           ring, a progress bar that actually fills over the wait, and status text that cycles
+           through several "processing stages" for a real multi-step feel. */
         function startAIRouteCalculationAnimation(destName) {
             playBeep();
+            const totalMs = 2200;
             const body = `
-                <div class="py-6 flex flex-col items-center justify-center space-y-4">
-                    <div class="w-16 h-16 rounded-full bg-blue-900/60 border-2 border-cyan-400 flex items-center justify-center animate-pulse text-2xl text-cyan-300 shadow-xl">
-                        <span class="material-symbols-filled" >psychology</span>
+                <div class="py-8 flex flex-col items-center justify-center space-y-5">
+                    <div class="relative w-24 h-24 flex items-center justify-center shrink-0">
+                        <div class="absolute inset-0 rounded-full border-2 border-cyan-400/60 ai-radar-ring"></div>
+                        <div class="absolute inset-0 rounded-full border-2 border-cyan-400/60 ai-radar-ring" style="animation-delay: 0.6s"></div>
+                        <div class="absolute inset-0 rounded-full border-2 border-cyan-400/60 ai-radar-ring" style="animation-delay: 1.2s"></div>
+                        <div class="absolute inset-1 rounded-full ai-spin-ring"></div>
+                        <div class="relative w-16 h-16 rounded-full bg-gradient-to-br from-blue-900 to-slate-950 border-2 border-cyan-300 flex items-center justify-center text-2xl text-cyan-300 shadow-2xl">
+                            <span class="material-symbols-filled">psychology</span>
+                        </div>
                     </div>
-                    <div class="text-center space-y-1">
+
+                    <div class="text-center space-y-1.5 min-h-[54px]">
                         <div class="text-sm font-black text-white">AI最適経路を探索・算出中...</div>
-                        <div class="text-xs text-slate-400">VICSリアルタイム渋滞 & 高速道路規制情報を照合</div>
+                        <div id="ai-route-status-text" class="text-xs text-cyan-300 font-bold transition-opacity duration-200">現在地を解析中...</div>
+                        <div class="text-[11px] text-slate-500 truncate max-w-[240px] mx-auto">${escapeHtml(destName)} へのルートを計算しています</div>
                     </div>
+
                     <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-700">
-                        <div class="bg-gradient-to-r from-blue-500 to-cyan-400 h-full w-full animate-pulse"></div>
+                        <div id="ai-route-progress-bar" class="bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 h-full rounded-full" style="width: 0%; transition: width ${totalMs}ms linear;"></div>
                     </div>
                 </div>
             `;
-            openCustomModal('T-Connect AI 経路探索', body);
+            openCustomModal('T-Connect AI 経路探索', body, { hideFooter: true });
+
+            // Kick off the fill on the next frame so the CSS width transition actually animates
+            // (setting width right after innerHTML is assigned can get coalesced with the
+            // initial 0% by the browser and skip straight to 100%).
+            requestAnimationFrame(() => {
+                const bar = document.getElementById('ai-route-progress-bar');
+                if (bar) bar.style.width = '100%';
+            });
+
+            const stages = [
+                '現在地を解析中...',
+                'VICSリアルタイム渋滞情報を照合中...',
+                '高速道路規制情報を確認中...',
+                'AIが複数ルート候補を比較中...',
+                '最適ルートを確定中...'
+            ];
+            let stageIdx = 0;
+            const stageInterval = setInterval(() => {
+                stageIdx++;
+                const el = document.getElementById('ai-route-status-text');
+                if (el && stageIdx < stages.length) {
+                    el.style.opacity = '0';
+                    setTimeout(() => { el.innerText = stages[stageIdx]; el.style.opacity = '1'; }, 180);
+                }
+            }, Math.round(totalMs / stages.length));
 
             setTimeout(() => {
+                clearInterval(stageInterval);
                 closeModal();
                 calculateAndDrawRoute(destName);
-            }, 1200);
+            }, totalMs);
         }
 
         function clearViaPoint() {

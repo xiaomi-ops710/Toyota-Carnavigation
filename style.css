@@ -2837,6 +2837,26 @@ video {
             filter: brightness(1.2);
         }
 
+        /* NEW: elaborate "AI route search" loading animation — radar-style expanding pulse
+           rings + a rotating gradient ring around the brain icon, used in
+           startAIRouteCalculationAnimation() (replaces the old plain static pulsing circle). */
+        @keyframes aiRadarPing {
+            0% { transform: scale(0.6); opacity: 0.9; }
+            100% { transform: scale(1.7); opacity: 0; }
+        }
+        .ai-radar-ring {
+            animation: aiRadarPing 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+        @keyframes aiSpinRing {
+            to { transform: rotate(360deg); }
+        }
+        .ai-spin-ring {
+            background: conic-gradient(from 0deg, transparent 0%, #22d3ee 20%, #818cf8 40%, transparent 60%);
+            -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+            animation: aiSpinRing 1.3s linear infinite;
+        }
+
         .climate-slider-bg {
             background: linear-gradient(180deg, #131824 0%, #090c12 100%);
             border-left: 1px solid #1e2636;

@@ -185,7 +185,9 @@
                          that gets squeezed. -->
                     <div id="top-status-bar" class="min-h-9 bg-slate-950/90 backdrop-blur border-b border-slate-800/80 px-2 sm:px-4 py-1 flex items-center gap-2 text-xs z-20 relative">
                         <div class="flex items-center gap-2 sm:gap-3 overflow-x-auto flex-nowrap min-w-0 shrink" style="scrollbar-width: thin;">
-                            <span id="top-clock" class="digital-font text-lg font-bold text-white tracking-wider shrink-0">17:42</span>
+                            <!-- NEW: removed — the clock now lives next to the map's compass
+                                 widget (see #compass-clock in the MAP & 3D SPLIT VIEWPORT
+                                 CONTAINER below), so it no longer needs to also sit here. -->
                             <button onclick="toggleWeatherOverlay()" class="shrink-0 text-slate-300 hover:text-white font-bold text-xs flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded-full">
                                 <span class="material-symbols-filled text-cyan-400"  id="weather-icon">partly_cloudy_day</span>
                                 <span id="ext-temp" class="text-white digital-font">22</span>°C
@@ -468,8 +470,11 @@
                             </div>
                         </div>
 
-                        <!-- RIGHT SECTION: TOYOTA CLIMATE CONTROL & HYBRID SPLIT PANEL -->
-                        <div id="split-climate-panel" class="w-72 climate-slider-bg h-full flex flex-col justify-between p-3 relative z-10 border-l border-slate-800 transition-all duration-300">
+                        <!-- RIGHT SECTION: TOYOTA CLIMATE CONTROL & HYBRID SPLIT PANEL
+                             FIXED: starts collapsed now — it used to take up permanent screen
+                             width by default; it only appears when the hw-strip's エアコン
+                             button is pressed, and that same button now closes it again too. -->
+                        <div id="split-climate-panel" class="w-72 climate-slider-bg h-full flex flex-col justify-between p-3 relative z-10 border-l border-slate-800 transition-all duration-300 climate-collapsed">
                             <!-- Climate Header -->
                             <div class="flex items-center justify-between border-b border-slate-800 pb-2">
                                 <div class="flex items-center gap-2">
@@ -560,12 +565,6 @@
                                 </div>
                             </div>
                         </div>
-
-                        <!-- NEW FEATURE: re-open tab shown when climate panel is hidden -->
-                        <button id="btn-climate-reopen" onclick="toggleClimatePanel(true)" class="hidden absolute right-0 top-1/2 -translate-y-1/2 z-20 bg-slate-800 hover:bg-slate-700 border border-slate-700 border-r-0 rounded-l-xl px-1.5 py-3 flex flex-col items-center gap-1 text-slate-300 shadow-lg" title="エアコン表示を出す">
-                            <span class="material-symbols-filled text-sm">chevron_left</span>
-                            <span class="text-[9px] font-bold [writing-mode:vertical-rl]">エアコン</span>
-                        </button>
 
                     </div>
 
@@ -884,7 +883,7 @@
                     <span class="material-symbols-filled text-base text-red-400">radio</span>
                 </button>
                 <!-- NEW: 再探索 → エアコン (per explicit request) -->
-                <button onclick="toggleClimatePanel(true)" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="エアコン">
+                <button onclick="toggleClimatePanel()" class="hw-strip-btn flex-1 rounded-xl flex flex-col items-center justify-center" title="エアコン (押すたび開閉)">
                     <span class="material-symbols-filled text-base text-sky-300" >mode_fan</span>
                 </button>
             </div>
