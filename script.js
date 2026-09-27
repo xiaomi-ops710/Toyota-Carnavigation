@@ -3806,10 +3806,13 @@
                     text: 'やあ！こんにちは！\n今日は何か調べたいことや、一緒に進めたい作業とかある？気軽になんでも聞いてね！目的地検索やエアコン設定、周辺情報の質問にもお答えできます。'
                 });
             }
+            // NEW: "Neural Expressive" redesign (Material 3 Expressive-based) — a gradient
+            // sparkle mark in the header instead of a generic icon, and a composer with a
+            // slowly hue-sweeping gradient border (see .gemini-input-bar in style.css).
             const body = `
                 <div id="gemini-chat-messages" class="space-y-4 pb-1"></div>
                 <div class="sticky bottom-0 -mx-4 sm:-mx-5 -mb-4 sm:-mb-5 px-4 sm:px-5 pt-3 pb-4 sm:pb-5 mt-4 bg-slate-900/95 backdrop-blur border-t border-slate-800">
-                    <div class="flex items-center gap-1.5 bg-slate-800 rounded-full pl-3 pr-1.5 py-1.5 border border-slate-700 focus-within:border-cyan-400 transition">
+                    <div class="gemini-input-bar flex items-center gap-1.5 rounded-full pl-3 pr-1.5 py-1.5 transition">
                         <button class="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 transition" title="添付(準備中)">
                             <span class="material-symbols-filled text-lg">add</span>
                         </button>
@@ -3817,19 +3820,26 @@
                         <button onclick="startVoiceRecognition()" id="ai-mic-btn" class="w-9 h-9 shrink-0 rounded-full flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition" title="音声入力">
                             <span class="material-symbols-filled text-lg">mic</span>
                         </button>
-                        <button onclick="submitAiQuery()" class="w-9 h-9 shrink-0 rounded-full bg-blue-600 hover:bg-blue-500 flex items-center justify-center text-white transition" title="送信">
+                        <button onclick="submitAiQuery()" class="w-9 h-9 shrink-0 rounded-full bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 hover:brightness-110 flex items-center justify-center text-white transition" title="送信">
                             <span class="material-symbols-filled text-lg">send</span>
                         </button>
                     </div>
                 </div>
             `;
             openCustomModal('Gemini', body, { fullscreen: true, hideFooter: true });
+            // NEW: replace the generic modal header icon with the Gemini gradient sparkle mark.
+            const titleEl = document.getElementById('modal-title');
+            if (titleEl) {
+                titleEl.innerHTML = `<span class="gemini-sparkle-icon" style="width:20px;height:20px;"></span> <span class="bg-gradient-to-r from-blue-300 via-purple-300 to-pink-300 bg-clip-text text-transparent font-black">Gemini</span>`;
+            }
             renderGeminiChatMessages();
         }
 
-        // NEW: renders the running conversation as chat bubbles, matching the real Gemini
-        // app — user turns as right-aligned filled bubbles, model turns as plain text with
-        // an action-icon row (and the standard AI disclaimer under the newest reply only).
+        // NEW: "Neural Expressive" bubble rendering — user turns as a tonal gradient-bordered
+        // pill (M3 Expressive asymmetric corner shape), model turns marked with a small
+        // pulsing gradient sparkle instead of no icon at all, bouncy overshoot-eased entrance
+        // motion on every new bubble, and a morphing gradient "thinking" blob + shimmering
+        // text while a reply is still pending (see submitAiQuery).
         function renderGeminiChatMessages() {
             const el = document.getElementById('gemini-chat-messages');
             if (!el) return;
@@ -3838,16 +3848,26 @@
             el.innerHTML = geminiChatHistory.map((m, i) => {
                 if (m.role === 'user') {
                     return `
-                        <div class="flex justify-end">
-                            <div class="bg-slate-700 text-white rounded-3xl rounded-br-lg px-4 py-2.5 max-w-[82%] text-sm leading-relaxed whitespace-pre-wrap">${escapeHtml(m.text)}</div>
+                        <div class="flex justify-end gemini-msg-in">
+                            <div class="gemini-user-bubble text-white rounded-[22px] rounded-br-md px-4 py-2.5 max-w-[82%] text-sm leading-relaxed whitespace-pre-wrap shadow-lg">${escapeHtml(m.text)}</div>
+                        </div>
+                    `;
+                }
+                if (m.pending) {
+                    return `
+                        <div class="flex items-center gap-3 gemini-msg-in">
+                            <div class="gemini-thinking-blob rounded-full"></div>
+                            <span class="gemini-shimmer-text text-sm font-bold">考えています...</span>
                         </div>
                     `;
                 }
                 return `
-                    <div class="space-y-2">
-                        <div class="text-sm leading-relaxed whitespace-pre-wrap ${m.isError ? 'text-amber-300' : 'text-slate-100'}">${m.html || escapeHtml(m.text)}</div>
-                        ${!m.pending ? `
-                        <div class="flex items-center gap-3 text-slate-500">
+                    <div class="space-y-2 gemini-msg-in">
+                        <div class="flex items-start gap-2">
+                            <span class="gemini-sparkle-icon mt-1"></span>
+                            <div class="text-sm leading-relaxed whitespace-pre-wrap flex-1 ${m.isError ? 'text-amber-300' : 'text-slate-100'}">${m.html || escapeHtml(m.text)}</div>
+                        </div>
+                        <div class="flex items-center gap-3 text-slate-500 pl-[23px]">
                             <button onclick="copyGeminiMessage(${i})" class="hover:text-white transition" title="コピー"><span class="material-symbols-filled text-[19px]">content_copy</span></button>
                             <button onclick="shareGeminiMessage(${i})" class="hover:text-white transition" title="共有"><span class="material-symbols-filled text-[19px]">ios_share</span></button>
                             <button onclick="speakGeminiMessage(${i})" class="hover:text-white transition" title="読み上げ"><span class="material-symbols-filled text-[19px]">volume_up</span></button>
@@ -3855,8 +3875,7 @@
                             <button onclick="rateGeminiMessage(${i}, false, this)" class="gemini-rate-btn hover:text-white transition" title="低評価"><span class="material-symbols-filled text-[19px]">thumb_down</span></button>
                             <button class="hover:text-white transition" title="その他"><span class="material-symbols-filled text-[19px]">more_horiz</span></button>
                         </div>
-                        ${i === lastModelIdx ? '<div class="text-[10px] text-slate-500">Gemini は AI であり、不正確な情報を提示することがあります。</div>' : ''}
-                        ` : ''}
+                        ${i === lastModelIdx ? '<div class="text-[10px] text-slate-500 pl-[23px]">Gemini は AI であり、不正確な情報を提示することがあります。</div>' : ''}
                     </div>
                 `;
             }).join('');

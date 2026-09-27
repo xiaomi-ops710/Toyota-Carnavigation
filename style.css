@@ -2857,6 +2857,95 @@ video {
             animation: aiSpinRing 1.3s linear infinite;
         }
 
+        /* ====================================================================
+           GEMINI "NEURAL EXPRESSIVE" UI — Material 3 Expressive-based redesign of the
+           Gemini chat (see openGeminiChatModal / renderGeminiChatMessages in script.js):
+           a morphing multi-color gradient "thinking" blob, shimmering text, a pulsing
+           sparkle mark on each reply, a hue-sweeping gradient border on the input bar, and
+           bouncy (overshoot-eased) entrance motion for new bubbles — all keyed off the
+           Gemini brand gradient (blue → purple → pink/orange) already used for the
+           asteroid launcher icon.
+           ==================================================================== */
+        @keyframes geminiBlobMorph {
+            0%, 100% { border-radius: 42% 58% 65% 35% / 45% 45% 55% 55%; transform: rotate(0deg) scale(1); }
+            25% { border-radius: 58% 42% 35% 65% / 55% 65% 35% 45%; transform: rotate(8deg) scale(1.06); }
+            50% { border-radius: 50% 50% 42% 58% / 62% 38% 62% 38%; transform: rotate(-6deg) scale(0.95); }
+            75% { border-radius: 35% 65% 58% 42% / 40% 60% 40% 60%; transform: rotate(4deg) scale(1.03); }
+        }
+        @keyframes geminiHueSweep {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 300% 50%; }
+        }
+        .gemini-thinking-blob {
+            width: 42px;
+            height: 42px;
+            background: conic-gradient(from 0deg, #4285F4, #9b72cb, #d96570, #f6b73c, #4285F4);
+            background-size: 200% 200%;
+            animation: geminiBlobMorph 3.2s ease-in-out infinite, geminiHueSweep 4s linear infinite;
+            box-shadow: 0 0 22px rgba(139, 92, 246, 0.5);
+            flex-shrink: 0;
+        }
+        @keyframes geminiShimmerText {
+            0% { background-position: 200% center; }
+            100% { background-position: -200% center; }
+        }
+        .gemini-shimmer-text {
+            background: linear-gradient(90deg, #8b93a8 0%, #8b93a8 35%, #ffffff 50%, #8b93a8 65%, #8b93a8 100%);
+            background-size: 250% 100%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: geminiShimmerText 2.1s linear infinite;
+        }
+        @keyframes geminiSparklePulse {
+            0%, 100% { transform: scale(1) rotate(0deg); opacity: 1; }
+            50% { transform: scale(1.18) rotate(10deg); opacity: 0.8; }
+        }
+        .gemini-sparkle-icon {
+            display: inline-block;
+            width: 15px;
+            height: 15px;
+            background: linear-gradient(135deg, #4285F4, #9b72cb, #d96570);
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0L14.2 9.8L24 12L14.2 14.2L12 24L9.8 14.2L0 12L9.8 9.8Z'/%3E%3C/svg%3E") center/contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0L14.2 9.8L24 12L14.2 14.2L12 24L9.8 14.2L0 12L9.8 9.8Z'/%3E%3C/svg%3E") center/contain no-repeat;
+            animation: geminiSparklePulse 1.8s ease-in-out infinite;
+            flex-shrink: 0;
+        }
+        /* M3 Expressive: bouncy, overshoot-eased entrance for each new chat bubble */
+        @keyframes geminiMsgIn {
+            0% { opacity: 0; transform: translateY(10px) scale(0.94); }
+            60% { opacity: 1; transform: translateY(-2px) scale(1.01); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .gemini-msg-in {
+            animation: geminiMsgIn 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+        }
+        .gemini-user-bubble {
+            background: linear-gradient(135deg, #2c3350, #1e2540);
+            border: 1px solid rgba(139, 146, 255, 0.28);
+        }
+        /* Hue-sweeping gradient border on the composer, M3-Expressive style */
+        .gemini-input-bar {
+            position: relative;
+            background: linear-gradient(180deg, rgba(30, 35, 55, 0.92), rgba(15, 18, 30, 0.96));
+        }
+        .gemini-input-bar::before {
+            content: '';
+            position: absolute;
+            inset: -1.5px;
+            border-radius: inherit;
+            padding: 1.5px;
+            background: linear-gradient(120deg, #4285F4, #9b72cb, #d96570, #4285F4);
+            background-size: 300% 300%;
+            animation: geminiHueSweep 6s linear infinite;
+            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            opacity: 0.65;
+            pointer-events: none;
+            z-index: -1;
+        }
+
         .climate-slider-bg {
             background: linear-gradient(180deg, #131824 0%, #090c12 100%);
             border-left: 1px solid #1e2636;
